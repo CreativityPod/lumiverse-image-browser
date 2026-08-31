@@ -2,6 +2,7 @@ import {
   PAGE_SIZE,
   filterImages,
   formatDimensions,
+  getPageWindow,
   isGeneratedImage,
   mapWithConcurrency,
   summarizeDeleteResults,
@@ -28,17 +29,17 @@ const STYLES = `
   .lib-status { min-height:20px; padding:9px 2px 7px; color:var(--lumiverse-text-muted); font-size:12px; }
   .lib-status[data-tone="error"] { color:#ff9d9d; }
   .lib-status[data-tone="success"] { color:#8be0b0; }
-  .lib-grid { flex:1; overflow:auto; display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); align-content:start; gap:14px; padding:4px 4px 14px 0; }
+  .lib-grid { flex:1 1 0; min-height:0; overflow-x:hidden; overflow-y:auto; scrollbar-gutter:stable; display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); grid-auto-rows:max-content; align-items:start; align-content:start; gap:14px; padding:4px 4px 14px 0; }
   .lib-empty { grid-column:1/-1; display:grid; place-items:center; min-height:220px; padding:24px; border:1px dashed var(--lumiverse-border); border-radius:14px; color:var(--lumiverse-text-muted); text-align:center; }
-  .lib-card { position:relative; min-width:0; overflow:hidden; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); transition:border-color .16s ease, transform .16s ease; }
+  .lib-card { position:relative; align-self:start; min-width:0; height:max-content; overflow:hidden; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); transition:border-color .16s ease, transform .16s ease; }
   .lib-card:hover { border-color:color-mix(in srgb, var(--lumiverse-primary) 55%, var(--lumiverse-border)); transform:translateY(-1px); }
   .lib-card[data-selected="true"] { border-color:var(--lumiverse-primary); box-shadow:0 0 0 1px var(--lumiverse-primary); }
   .lib-card[data-protected="true"]::after { content:'Referenced'; position:absolute; right:8px; top:8px; padding:4px 7px; border-radius:999px; background:rgba(30,41,59,.88); color:#fff; font-size:10px; font-weight:750; pointer-events:none; }
   .lib-check { position:absolute; z-index:2; left:9px; top:9px; display:grid; place-items:center; width:26px; height:26px; border-radius:8px; background:rgba(15,23,42,.78); backdrop-filter:blur(5px); }
   .lib-check input { width:16px; height:16px; accent-color:var(--lumiverse-primary); cursor:pointer; }
-  .lib-preview-button { display:block; width:100%; padding:0; border:0; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 78%, #000 22%); cursor:zoom-in; }
-  .lib-thumb { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; color:transparent; }
-  .lib-thumb-fallback { display:none; place-items:center; width:100%; aspect-ratio:1/1; color:var(--lumiverse-text-muted); font-size:12px; }
+  .lib-preview-button { display:grid; place-items:center; width:100%; aspect-ratio:1/1; min-height:0; overflow:hidden; padding:0; border:0; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 78%, #000 22%); cursor:zoom-in; }
+  .lib-thumb { display:block; width:100%; height:100%; object-fit:contain; color:transparent; }
+  .lib-thumb-fallback { display:none; place-items:center; width:100%; height:100%; color:var(--lumiverse-text-muted); font-size:12px; }
   .lib-meta { display:grid; gap:5px; padding:10px 11px 12px; }
   .lib-filename { overflow:hidden; color:var(--lumiverse-text); font-size:12px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
   .lib-detail { display:flex; justify-content:space-between; gap:8px; color:var(--lumiverse-text-dim); font-size:10px; }
@@ -176,32 +177,40 @@ export function setup(ctx) {
     }
   }
 
-  async function loadPage(reset = false) {
-    if (!browserState || browserState.loading) return
-    browserState.loading = true
-    browserState.status = reset ? 'Loading images…' : 'Loading more images…'
-    browserState.tone = ''
+  async function loadPage(offset = 0) {
+    const state = browserState
+    if (!state || state.loading) return
+    const requestedOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
+    state.loading = true
+    state.status = `Loading images ${requestedOffset + 1}–${requestedOffset + PAGE_SIZE}…`
+    state.tone = ''
     renderBrowser()
     try {
-      const offset = reset ? 0 : browserState.items.length
-      const response = await rpc('image_browser_list', { limit: PAGE_SIZE, offset })
+      const response = await rpc('image_browser_list', { limit: PAGE_SIZE, offset: requestedOffset })
+      if (browserState !== state) return
       const result = response.result || { data: [], total: 0 }
-      browserState.items = reset ? result.data : [...browserState.items, ...result.data]
-      browserState.total = Number(result.total) || 0
-      browserState.permissionGranted = true
+      state.items = Array.isArray(result.data) ? result.data : []
+      state.total = Math.max(0, Number(result.total) || 0)
+      state.offset = requestedOffset
+      state.permissionGranted = true
       permissionGranted = true
-      browserState.status = browserState.items.length
-        ? `Loaded ${browserState.items.length} of ${browserState.total} images.`
-        : 'No stored images were found.'
+      const page = getPageWindow(state.offset, state.items.length, state.total)
+      state.status = state.items.length
+        ? `Showing ${page.start}–${page.end} of ${state.total} images.`
+        : state.total === 0
+          ? 'No stored images were found.'
+          : 'No images were found on this page.'
     } catch (error) {
-      browserState.status = error instanceof Error ? error.message : String(error)
-      browserState.tone = 'error'
-      if (String(browserState.status).includes('Images permission')) {
-        browserState.permissionGranted = false
+      if (browserState !== state) return
+      state.status = error instanceof Error ? error.message : String(error)
+      state.tone = 'error'
+      if (String(state.status).includes('Images permission')) {
+        state.permissionGranted = false
         permissionGranted = false
       }
     } finally {
-      if (browserState) browserState.loading = false
+      if (browserState !== state) return
+      state.loading = false
       renderLauncher()
       renderBrowser()
     }
@@ -217,6 +226,7 @@ export function setup(ctx) {
     browserState = {
       root: browserModal.root,
       items: [],
+      offset: 0,
       total: 0,
       selected: new Set(),
       protectedIds: new Set(),
@@ -234,7 +244,7 @@ export function setup(ctx) {
       browserState = null
     })
     renderBrowser()
-    void loadPage(true)
+    void loadPage(0)
   }
 
   async function openPreview(image) {
@@ -372,11 +382,14 @@ export function setup(ctx) {
     if (!browserState?.root) return
     const state = browserState
     const visibleImages = filterImages(state.items, state.query, state.generatedOnly)
+    const page = getPageWindow(state.offset, state.items.length, state.total)
     state.root.replaceChildren()
 
     const summary = createElement('div', 'lib-summary')
     summary.append(
-      createElement('span', '', `${state.total} stored image${state.total === 1 ? '' : 's'}`),
+      createElement('span', '', state.total > 0
+        ? `Page ${page.pageNumber} of ${page.pageCount} · ${page.start}–${page.end} of ${state.total}`
+        : '0 stored images'),
       createElement('span', '', `${state.selected.size} selected`),
     )
 
@@ -404,7 +417,7 @@ export function setup(ctx) {
     const refreshButton = createElement('button', 'lib-button lib-button-quiet', 'Refresh')
     refreshButton.type = 'button'
     refreshButton.disabled = state.loading || state.deleting
-    refreshButton.addEventListener('click', () => void loadPage(true))
+    refreshButton.addEventListener('click', () => void loadPage(state.offset))
     toolbar.append(search, generatedLabel, refreshButton)
 
     const status = createElement('div', 'lib-status', state.permissionGranted === false
@@ -435,16 +448,19 @@ export function setup(ctx) {
     selectAllLabel.append(selectAll, document.createTextNode('Select visible'))
 
     const footerActions = createElement('div', 'lib-footer-actions')
-    const loadMore = createElement('button', 'lib-button lib-button-quiet', 'Load more')
-    loadMore.type = 'button'
-    loadMore.hidden = state.items.length >= state.total
-    loadMore.disabled = state.loading || state.deleting
-    loadMore.addEventListener('click', () => void loadPage(false))
+    const previousButton = createElement('button', 'lib-button lib-button-quiet', 'Previous')
+    previousButton.type = 'button'
+    previousButton.disabled = !page.hasPrevious || state.loading || state.deleting
+    previousButton.addEventListener('click', () => void loadPage(page.previousOffset))
+    const nextButton = createElement('button', 'lib-button lib-button-quiet', 'Next')
+    nextButton.type = 'button'
+    nextButton.disabled = !page.hasNext || state.loading || state.deleting
+    nextButton.addEventListener('click', () => void loadPage(page.nextOffset))
     const deleteButton = createElement('button', 'lib-button lib-button-danger', state.deleting ? 'Checking…' : `Delete unused (${state.selected.size})`)
     deleteButton.type = 'button'
     deleteButton.disabled = state.selected.size === 0 || state.loading || state.deleting || state.permissionGranted === false
     deleteButton.addEventListener('click', () => void deleteSelected())
-    footerActions.append(loadMore, deleteButton)
+    footerActions.append(previousButton, nextButton, deleteButton)
     footer.append(selectAllLabel, footerActions)
 
     state.root.append(summary, toolbar, status, grid, footer)

@@ -18,6 +18,17 @@ test('frontend uses safe deletion and never the force-delete API', async () => {
   assert.match(source, /mapWithConcurrency\(ids, 3/)
 })
 
+test('frontend uses contained square thumbnails and fixed-page navigation', async () => {
+  const source = await readFile(new URL('../src/frontend.js', import.meta.url), 'utf8')
+  assert.match(source, /grid-auto-rows:max-content/)
+  assert.match(source, /aspect-ratio:1\/1/)
+  assert.match(source, /object-fit:contain/)
+  assert.match(source, /overflow-y:auto/)
+  assert.match(source, /'Previous'/)
+  assert.match(source, /'Next'/)
+  assert.doesNotMatch(source, /'Load more'/)
+})
+
 test('built frontend is self-contained for Lumiverse Blob URL loading', async () => {
   const source = await readFile(new URL('../dist/frontend.js', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /from\s+['"]\.\/model\.js['"]/)

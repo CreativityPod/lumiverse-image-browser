@@ -5,6 +5,28 @@ export function clampPageSize(value) {
   return Math.max(1, Math.min(200, parsed))
 }
 
+export function getPageWindow(offset, itemCount, total, pageSize = PAGE_SIZE) {
+  const size = clampPageSize(pageSize)
+  const normalizedOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
+  const normalizedCount = Math.max(0, Math.trunc(Number(itemCount)) || 0)
+  const normalizedTotal = Math.max(0, Math.trunc(Number(total)) || 0)
+  const pageCount = Math.max(1, Math.ceil(normalizedTotal / size))
+  const pageNumber = Math.min(pageCount, Math.floor(normalizedOffset / size) + 1)
+
+  return {
+    start: normalizedCount > 0 ? Math.min(normalizedOffset + 1, normalizedTotal) : 0,
+    end: normalizedCount > 0
+      ? Math.min(normalizedOffset + normalizedCount, normalizedTotal)
+      : 0,
+    pageNumber,
+    pageCount,
+    previousOffset: Math.max(0, normalizedOffset - size),
+    nextOffset: normalizedOffset + size,
+    hasPrevious: normalizedOffset > 0,
+    hasNext: normalizedOffset + size < normalizedTotal,
+  }
+}
+
 export function isGeneratedImage(image) {
   return typeof image?.original_filename === 'string'
     && image.original_filename.toLowerCase().startsWith('image-gen-')
