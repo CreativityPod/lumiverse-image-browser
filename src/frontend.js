@@ -86,13 +86,15 @@ export function setup(ctx) {
   ctx.deferReady()
   const removeStyle = ctx.dom.addStyle(STYLES)
   const pending = new Map()
+  let requestSequence = 0
   let browserModal = null
   let browserState = null
   let permissionGranted = null
   let disposed = false
 
   function rpc(type, payload = {}) {
-    const requestId = crypto.randomUUID()
+    requestSequence += 1
+    const requestId = `image-browser-${Date.now().toString(36)}-${requestSequence.toString(36)}`
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         pending.delete(requestId)
@@ -154,13 +156,25 @@ export function setup(ctx) {
     drawer.root.append(card, openButton)
   }
 
-  const inputAction = ctx.ui.registerInputBarAction({
-    id: 'open-image-browser',
-    label: 'Open Image Browser',
-    iconSvg: ACTION_ICON_SVG,
-    enabled: true,
-  })
-  const unsubscribeAction = inputAction.onClick(openBrowser)
+  let inputAction = null
+  let unsubscribeAction = () => {}
+  if (typeof ctx.ui.registerInputBarAction === 'function') {
+    try {
+      inputAction = ctx.ui.registerInputBarAction({
+        id: 'open-image-browser',
+        label: 'Open Image Browser',
+        iconSvg: ACTION_ICON_SVG,
+        enabled: true,
+      })
+      if (typeof inputAction?.onClick === 'function') {
+        unsubscribeAction = inputAction.onClick(openBrowser)
+      }
+    } catch (error) {
+      try { inputAction?.destroy?.() } catch { /* best-effort cleanup */ }
+      inputAction = null
+      console.warn('[Image Browser] Input bar action is unavailable:', error)
+    }
+  }
 
   async function loadPage(reset = false) {
     if (!browserState || browserState.loading) return
@@ -461,7 +475,7 @@ export function setup(ctx) {
     pending.clear()
     unsubscribeBackend()
     unsubscribeAction()
-    inputAction.destroy()
+    inputAction?.destroy?.()
     drawer.destroy()
     removeStyle()
   }
