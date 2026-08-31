@@ -1,0 +1,468 @@
+import {
+  PAGE_SIZE,
+  filterImages,
+  formatDimensions,
+  isGeneratedImage,
+  mapWithConcurrency,
+  summarizeDeleteResults,
+} from './model.js'
+
+const ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>'
+const ACTION_ICON_SVG = ICON_SVG.replace('width="20" height="20"', 'width="14" height="14"')
+
+const STYLES = `
+  .lib-launcher { display:grid; gap:14px; padding:18px; color:var(--lumiverse-text); }
+  .lib-launcher-card { padding:16px; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); }
+  .lib-launcher h3 { margin:0 0 6px; font-size:16px; }
+  .lib-launcher p { margin:0; color:var(--lumiverse-text-muted); font-size:13px; line-height:1.5; }
+  .lib-button { appearance:none; border:1px solid color-mix(in srgb, var(--lumiverse-primary) 48%, var(--lumiverse-border)); border-radius:10px; padding:9px 13px; background:color-mix(in srgb, var(--lumiverse-primary) 14%, var(--lumiverse-fill)); color:var(--lumiverse-text); font:inherit; font-weight:650; cursor:pointer; }
+  .lib-button:hover { background:color-mix(in srgb, var(--lumiverse-primary) 22%, var(--lumiverse-fill)); }
+  .lib-button:disabled { cursor:not-allowed; opacity:.5; }
+  .lib-button-danger { border-color:color-mix(in srgb, #ef4444 55%, var(--lumiverse-border)); background:color-mix(in srgb, #ef4444 13%, var(--lumiverse-fill)); }
+  .lib-button-quiet { background:var(--lumiverse-fill-subtle); border-color:var(--lumiverse-border); font-weight:550; }
+  .lib-shell { display:flex; flex-direction:column; width:100%; height:min(760px, calc(100vh - 128px)); min-height:min(540px, calc(100vh - 128px)); color:var(--lumiverse-text); overflow:hidden; }
+  .lib-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 0 12px; color:var(--lumiverse-text-muted); font-size:12px; }
+  .lib-toolbar { display:grid; grid-template-columns:minmax(180px, 1fr) auto auto; align-items:center; gap:10px; padding-bottom:12px; border-bottom:1px solid var(--lumiverse-border); }
+  .lib-search { width:100%; min-width:0; box-sizing:border-box; border:1px solid var(--lumiverse-border); border-radius:10px; padding:9px 11px; background:var(--lumiverse-fill); color:var(--lumiverse-text); font:inherit; }
+  .lib-toggle, .lib-select-all { display:inline-flex; align-items:center; gap:7px; color:var(--lumiverse-text-muted); font-size:12px; white-space:nowrap; }
+  .lib-status { min-height:20px; padding:9px 2px 7px; color:var(--lumiverse-text-muted); font-size:12px; }
+  .lib-status[data-tone="error"] { color:#ff9d9d; }
+  .lib-status[data-tone="success"] { color:#8be0b0; }
+  .lib-grid { flex:1; overflow:auto; display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); align-content:start; gap:14px; padding:4px 4px 14px 0; }
+  .lib-empty { grid-column:1/-1; display:grid; place-items:center; min-height:220px; padding:24px; border:1px dashed var(--lumiverse-border); border-radius:14px; color:var(--lumiverse-text-muted); text-align:center; }
+  .lib-card { position:relative; min-width:0; overflow:hidden; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); transition:border-color .16s ease, transform .16s ease; }
+  .lib-card:hover { border-color:color-mix(in srgb, var(--lumiverse-primary) 55%, var(--lumiverse-border)); transform:translateY(-1px); }
+  .lib-card[data-selected="true"] { border-color:var(--lumiverse-primary); box-shadow:0 0 0 1px var(--lumiverse-primary); }
+  .lib-card[data-protected="true"]::after { content:'Referenced'; position:absolute; right:8px; top:8px; padding:4px 7px; border-radius:999px; background:rgba(30,41,59,.88); color:#fff; font-size:10px; font-weight:750; pointer-events:none; }
+  .lib-check { position:absolute; z-index:2; left:9px; top:9px; display:grid; place-items:center; width:26px; height:26px; border-radius:8px; background:rgba(15,23,42,.78); backdrop-filter:blur(5px); }
+  .lib-check input { width:16px; height:16px; accent-color:var(--lumiverse-primary); cursor:pointer; }
+  .lib-preview-button { display:block; width:100%; padding:0; border:0; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 78%, #000 22%); cursor:zoom-in; }
+  .lib-thumb { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; color:transparent; }
+  .lib-thumb-fallback { display:none; place-items:center; width:100%; aspect-ratio:1/1; color:var(--lumiverse-text-muted); font-size:12px; }
+  .lib-meta { display:grid; gap:5px; padding:10px 11px 12px; }
+  .lib-filename { overflow:hidden; color:var(--lumiverse-text); font-size:12px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+  .lib-detail { display:flex; justify-content:space-between; gap:8px; color:var(--lumiverse-text-dim); font-size:10px; }
+  .lib-kind { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lib-generated { color:var(--lumiverse-primary); font-weight:700; }
+  .lib-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-top:12px; border-top:1px solid var(--lumiverse-border); }
+  .lib-footer-actions { display:flex; align-items:center; gap:9px; }
+  .lib-preview-shell { display:grid; grid-template-rows:minmax(0, 1fr) auto; width:100%; height:min(800px, calc(100vh - 128px)); min-height:280px; gap:12px; }
+  .lib-full-media { display:block; width:100%; height:100%; min-height:0; object-fit:contain; border-radius:10px; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 72%, #000 28%); }
+  .lib-preview-meta { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px 16px; color:var(--lumiverse-text-muted); font-size:11px; }
+  @media (max-width:700px) {
+    .lib-shell { height:calc(100vh - 112px); min-height:360px; }
+    .lib-toolbar { grid-template-columns:1fr auto; }
+    .lib-toggle { grid-column:1/-1; }
+    .lib-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:9px; }
+    .lib-footer { align-items:stretch; flex-direction:column; }
+    .lib-footer-actions { justify-content:space-between; }
+  }
+`
+
+function createElement(tag, className, text) {
+  const element = document.createElement(tag)
+  if (className) element.className = className
+  if (text !== undefined) element.textContent = text
+  return element
+}
+
+function relativeDate(unixSeconds) {
+  if (!Number.isFinite(Number(unixSeconds))) return 'Unknown date'
+  return new Date(Number(unixSeconds) * 1000).toLocaleString()
+}
+
+async function safeDeleteImage(imageId) {
+  const response = await fetch(`/api/v1/images/${encodeURIComponent(imageId)}?unused=true`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.error || `Delete failed with status ${response.status}`)
+  return body.deleted === true
+}
+
+export function setup(ctx) {
+  ctx.deferReady()
+  const removeStyle = ctx.dom.addStyle(STYLES)
+  const pending = new Map()
+  let browserModal = null
+  let browserState = null
+  let permissionGranted = null
+  let disposed = false
+
+  function rpc(type, payload = {}) {
+    const requestId = crypto.randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pending.delete(requestId)
+        reject(new Error('Image Browser request timed out.'))
+      }, 20_000)
+      pending.set(requestId, { resolve, reject, timer })
+      ctx.sendToBackend({ type, requestId, ...payload })
+    })
+  }
+
+  const unsubscribeBackend = ctx.onBackendMessage((payload) => {
+    if (!payload || typeof payload !== 'object') return
+    if (payload.type === 'image_browser_permission_changed') {
+      permissionGranted = Boolean(payload.granted)
+      renderLauncher()
+      if (browserState) {
+        browserState.permissionGranted = permissionGranted
+        renderBrowser()
+      }
+      return
+    }
+    if (payload.type === 'image_browser_assets_changed') return
+    const entry = pending.get(payload.requestId)
+    if (!entry) return
+    window.clearTimeout(entry.timer)
+    pending.delete(payload.requestId)
+    if (payload.ok) entry.resolve(payload)
+    else entry.reject(new Error(payload.error || 'Image Browser request failed.'))
+  })
+
+  const drawer = ctx.ui.registerDrawerTab({
+    id: 'image-browser',
+    title: 'Image Browser',
+    shortName: 'Images',
+    headerTitle: 'Image Browser',
+    description: 'Browse, preview, and safely remove unused image assets',
+    keywords: ['images', 'gallery', 'assets', 'cleanup', 'orphaned'],
+    iconSvg: ICON_SVG,
+  })
+  drawer.root.classList.add('lib-launcher')
+
+  function renderLauncher() {
+    drawer.root.replaceChildren()
+    const card = createElement('div', 'lib-launcher-card')
+    card.append(
+      createElement('h3', '', 'Stored image assets'),
+      createElement(
+        'p',
+        '',
+        permissionGranted === false
+          ? 'Grant the Images permission in the Extensions panel to browse your assets.'
+          : 'Open a wide, paginated thumbnail browser. Safe deletion keeps every referenced image protected.',
+      ),
+    )
+    const openButton = createElement('button', 'lib-button', 'Open Image Browser')
+    openButton.type = 'button'
+    openButton.disabled = permissionGranted === false
+    openButton.addEventListener('click', openBrowser)
+    drawer.root.append(card, openButton)
+  }
+
+  const inputAction = ctx.ui.registerInputBarAction({
+    id: 'open-image-browser',
+    label: 'Open Image Browser',
+    iconSvg: ACTION_ICON_SVG,
+    enabled: true,
+  })
+  const unsubscribeAction = inputAction.onClick(openBrowser)
+
+  async function loadPage(reset = false) {
+    if (!browserState || browserState.loading) return
+    browserState.loading = true
+    browserState.status = reset ? 'Loading images…' : 'Loading more images…'
+    browserState.tone = ''
+    renderBrowser()
+    try {
+      const offset = reset ? 0 : browserState.items.length
+      const response = await rpc('image_browser_list', { limit: PAGE_SIZE, offset })
+      const result = response.result || { data: [], total: 0 }
+      browserState.items = reset ? result.data : [...browserState.items, ...result.data]
+      browserState.total = Number(result.total) || 0
+      browserState.permissionGranted = true
+      permissionGranted = true
+      browserState.status = browserState.items.length
+        ? `Loaded ${browserState.items.length} of ${browserState.total} images.`
+        : 'No stored images were found.'
+    } catch (error) {
+      browserState.status = error instanceof Error ? error.message : String(error)
+      browserState.tone = 'error'
+      if (String(browserState.status).includes('Images permission')) {
+        browserState.permissionGranted = false
+        permissionGranted = false
+      }
+    } finally {
+      if (browserState) browserState.loading = false
+      renderLauncher()
+      renderBrowser()
+    }
+  }
+
+  function openBrowser() {
+    if (disposed || browserModal) return
+    browserModal = ctx.ui.showModal({
+      title: 'Image Browser',
+      width: 1120,
+      maxHeight: Math.min(900, Math.max(520, window.innerHeight - 40)),
+    })
+    browserState = {
+      root: browserModal.root,
+      items: [],
+      total: 0,
+      selected: new Set(),
+      protectedIds: new Set(),
+      query: '',
+      generatedOnly: false,
+      loading: false,
+      deleting: false,
+      permissionGranted,
+      status: 'Loading images…',
+      tone: '',
+    }
+    browserState.root.classList.add('lib-shell')
+    browserModal.onDismiss(() => {
+      browserModal = null
+      browserState = null
+    })
+    renderBrowser()
+    void loadPage(true)
+  }
+
+  async function openPreview(image) {
+    if (!browserState) return
+    browserState.status = `Loading ${image.original_filename || image.id}…`
+    browserState.tone = ''
+    renderBrowser()
+    try {
+      const response = await rpc('image_browser_get', { imageId: image.id })
+      const fullImage = response.result
+      if (!fullImage) throw new Error('The image is no longer available.')
+      const preview = ctx.ui.showModal({
+        title: fullImage.original_filename || 'Image preview',
+        width: 1200,
+        maxHeight: Math.min(940, Math.max(420, window.innerHeight - 40)),
+      })
+      const shell = createElement('div', 'lib-preview-shell')
+      const isVideo = String(fullImage.mime_type || '').startsWith('video/')
+      const media = createElement(isVideo ? 'video' : 'img', 'lib-full-media')
+      media.src = fullImage.url
+      if (isVideo) {
+        media.controls = true
+        media.preload = 'metadata'
+      } else {
+        media.alt = fullImage.original_filename || 'Full image preview'
+      }
+      const meta = createElement('div', 'lib-preview-meta')
+      meta.append(
+        createElement('span', '', formatDimensions(fullImage)),
+        createElement('span', '', fullImage.mime_type || 'Unknown media type'),
+        createElement('span', '', relativeDate(fullImage.created_at)),
+      )
+      shell.append(media, meta)
+      preview.root.appendChild(shell)
+      browserState.status = `Previewing ${fullImage.original_filename || fullImage.id}.`
+    } catch (error) {
+      browserState.status = error instanceof Error ? error.message : String(error)
+      browserState.tone = 'error'
+    } finally {
+      renderBrowser()
+    }
+  }
+
+  async function deleteSelected() {
+    if (!browserState || browserState.deleting || browserState.selected.size === 0) return
+    const ids = [...browserState.selected]
+    const { confirmed } = await ctx.ui.showConfirm({
+      title: `Safely delete ${ids.length} selected image${ids.length === 1 ? '' : 's'}?`,
+      message: 'Lumiverse will permanently delete only images with no known internal references. Referenced images will remain protected. This cannot be undone for images that are deleted.',
+      variant: 'danger',
+      confirmLabel: 'Delete unused',
+    })
+    if (!confirmed || !browserState) return
+
+    browserState.deleting = true
+    browserState.status = `Checking ${ids.length} selected image${ids.length === 1 ? '' : 's'}…`
+    browserState.tone = ''
+    renderBrowser()
+
+    const results = await mapWithConcurrency(ids, 3, async (id) => {
+      try {
+        return await safeDeleteImage(id)
+          ? { id, status: 'deleted' }
+          : { id, status: 'protected' }
+      } catch (error) {
+        return { id, status: 'failed', error: error instanceof Error ? error.message : String(error) }
+      }
+    })
+
+    if (!browserState) return
+    const summary = summarizeDeleteResults(results)
+    const deletedIds = new Set(results.filter((result) => result.status === 'deleted').map((result) => result.id))
+    const protectedIds = results.filter((result) => result.status === 'protected').map((result) => result.id)
+    browserState.items = browserState.items.filter((image) => !deletedIds.has(image.id))
+    browserState.total = Math.max(0, browserState.total - summary.deleted)
+    browserState.selected.clear()
+    for (const id of protectedIds) browserState.protectedIds.add(id)
+    browserState.deleting = false
+    browserState.status = [
+      `${summary.deleted} deleted`,
+      `${summary.protected} referenced and protected`,
+      summary.failed ? `${summary.failed} failed` : null,
+    ].filter(Boolean).join(' · ')
+    browserState.tone = summary.failed ? 'error' : 'success'
+    renderBrowser()
+  }
+
+  function renderCard(image) {
+    const card = createElement('article', 'lib-card')
+    card.dataset.selected = String(browserState.selected.has(image.id))
+    card.dataset.protected = String(browserState.protectedIds.has(image.id))
+
+    const checkboxLabel = createElement('label', 'lib-check')
+    checkboxLabel.title = 'Select image'
+    const checkbox = document.createElement('input')
+    checkbox.type = 'checkbox'
+    checkbox.checked = browserState.selected.has(image.id)
+    checkbox.setAttribute('aria-label', `Select ${image.original_filename || image.id}`)
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) browserState.selected.add(image.id)
+      else browserState.selected.delete(image.id)
+      renderBrowser()
+    })
+    checkboxLabel.appendChild(checkbox)
+
+    const previewButton = createElement('button', 'lib-preview-button')
+    previewButton.type = 'button'
+    previewButton.title = 'Open full image'
+    previewButton.setAttribute('aria-label', `Preview ${image.original_filename || image.id}`)
+    const thumbnail = createElement('img', 'lib-thumb')
+    thumbnail.src = image.url
+    thumbnail.alt = image.original_filename || 'Image thumbnail'
+    thumbnail.loading = 'lazy'
+    const fallback = createElement('span', 'lib-thumb-fallback', 'Preview unavailable')
+    thumbnail.addEventListener('error', () => {
+      thumbnail.style.display = 'none'
+      fallback.style.display = 'grid'
+    })
+    previewButton.append(thumbnail, fallback)
+    previewButton.addEventListener('click', () => void openPreview(image))
+
+    const meta = createElement('div', 'lib-meta')
+    const filename = createElement('div', 'lib-filename', image.original_filename || image.id)
+    filename.title = image.original_filename || image.id
+    const details = createElement('div', 'lib-detail')
+    const kind = createElement('span', `lib-kind${isGeneratedImage(image) ? ' lib-generated' : ''}`, isGeneratedImage(image) ? 'Generated' : (image.mime_type || 'Unknown'))
+    const dimensions = createElement('span', '', formatDimensions(image))
+    details.append(kind, dimensions)
+    meta.append(filename, details)
+    card.append(checkboxLabel, previewButton, meta)
+    return card
+  }
+
+  function renderBrowser() {
+    if (!browserState?.root) return
+    const state = browserState
+    const visibleImages = filterImages(state.items, state.query, state.generatedOnly)
+    state.root.replaceChildren()
+
+    const summary = createElement('div', 'lib-summary')
+    summary.append(
+      createElement('span', '', `${state.total} stored image${state.total === 1 ? '' : 's'}`),
+      createElement('span', '', `${state.selected.size} selected`),
+    )
+
+    const toolbar = createElement('div', 'lib-toolbar')
+    const search = createElement('input', 'lib-search')
+    search.type = 'search'
+    search.placeholder = 'Filter loaded images by filename, ID, or owner…'
+    search.value = state.query
+    search.addEventListener('input', () => {
+      state.query = search.value
+      renderBrowser()
+      const replacement = state.root.querySelector('.lib-search')
+      replacement?.focus()
+      replacement?.setSelectionRange(state.query.length, state.query.length)
+    })
+    const generatedLabel = createElement('label', 'lib-toggle')
+    const generatedToggle = document.createElement('input')
+    generatedToggle.type = 'checkbox'
+    generatedToggle.checked = state.generatedOnly
+    generatedToggle.addEventListener('change', () => {
+      state.generatedOnly = generatedToggle.checked
+      renderBrowser()
+    })
+    generatedLabel.append(generatedToggle, document.createTextNode('Generated only'))
+    const refreshButton = createElement('button', 'lib-button lib-button-quiet', 'Refresh')
+    refreshButton.type = 'button'
+    refreshButton.disabled = state.loading || state.deleting
+    refreshButton.addEventListener('click', () => void loadPage(true))
+    toolbar.append(search, generatedLabel, refreshButton)
+
+    const status = createElement('div', 'lib-status', state.permissionGranted === false
+      ? 'Grant the Images permission in the Extensions panel, then refresh.'
+      : state.status)
+    status.dataset.tone = state.permissionGranted === false ? 'error' : state.tone
+
+    const grid = createElement('div', 'lib-grid')
+    if (visibleImages.length === 0) {
+      grid.appendChild(createElement('div', 'lib-empty', state.loading ? 'Loading…' : 'No loaded images match this view.'))
+    } else {
+      for (const image of visibleImages) grid.appendChild(renderCard(image))
+    }
+
+    const footer = createElement('div', 'lib-footer')
+    const selectAllLabel = createElement('label', 'lib-select-all')
+    const selectAll = document.createElement('input')
+    selectAll.type = 'checkbox'
+    selectAll.checked = visibleImages.length > 0 && visibleImages.every((image) => state.selected.has(image.id))
+    selectAll.indeterminate = !selectAll.checked && visibleImages.some((image) => state.selected.has(image.id))
+    selectAll.addEventListener('change', () => {
+      for (const image of visibleImages) {
+        if (selectAll.checked) state.selected.add(image.id)
+        else state.selected.delete(image.id)
+      }
+      renderBrowser()
+    })
+    selectAllLabel.append(selectAll, document.createTextNode('Select visible'))
+
+    const footerActions = createElement('div', 'lib-footer-actions')
+    const loadMore = createElement('button', 'lib-button lib-button-quiet', 'Load more')
+    loadMore.type = 'button'
+    loadMore.hidden = state.items.length >= state.total
+    loadMore.disabled = state.loading || state.deleting
+    loadMore.addEventListener('click', () => void loadPage(false))
+    const deleteButton = createElement('button', 'lib-button lib-button-danger', state.deleting ? 'Checking…' : `Delete unused (${state.selected.size})`)
+    deleteButton.type = 'button'
+    deleteButton.disabled = state.selected.size === 0 || state.loading || state.deleting || state.permissionGranted === false
+    deleteButton.addEventListener('click', () => void deleteSelected())
+    footerActions.append(loadMore, deleteButton)
+    footer.append(selectAllLabel, footerActions)
+
+    state.root.append(summary, toolbar, status, grid, footer)
+  }
+
+  renderLauncher()
+  void rpc('image_browser_permission')
+    .then((response) => {
+      permissionGranted = Boolean(response.granted)
+      renderLauncher()
+    })
+    .catch(() => {
+      permissionGranted = false
+      renderLauncher()
+    })
+
+  ctx.ready()
+
+  return () => {
+    disposed = true
+    browserModal?.dismiss()
+    browserModal = null
+    browserState = null
+    for (const entry of pending.values()) {
+      window.clearTimeout(entry.timer)
+      entry.reject(new Error('Image Browser was unloaded.'))
+    }
+    pending.clear()
+    unsubscribeBackend()
+    unsubscribeAction()
+    inputAction.destroy()
+    drawer.destroy()
+    removeStyle()
+  }
+}
