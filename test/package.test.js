@@ -16,6 +16,9 @@ test('frontend uses safe deletion and never the force-delete API', async () => {
   assert.match(source, /\?unused=true/)
   assert.doesNotMatch(source, /spindle\.images\.delete\s*\(/)
   assert.match(source, /mapWithConcurrency\(ids, 3/)
+  assert.match(source, /knownProtectedCount/)
+  assert.match(source, /variant: knownProtectedCount > 0 \? 'warning' : 'danger'/)
+  assert.match(source, /referenced \(still shown\)/)
 })
 
 test('frontend uses contained square thumbnails and fixed-page navigation', async () => {

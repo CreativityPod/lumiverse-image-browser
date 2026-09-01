@@ -135,6 +135,7 @@ const STYLES = `
   .lib-toggle, .lib-select-all { display:inline-flex; align-items:center; gap:7px; color:var(--lumiverse-text-muted); font-size:12px; white-space:nowrap; }
   .lib-status { min-height:20px; padding:9px 2px 7px; color:var(--lumiverse-text-muted); font-size:12px; }
   .lib-status[data-tone="error"] { color:#ff9d9d; }
+  .lib-status[data-tone="warning"] { color:#f6c56f; }
   .lib-status[data-tone="success"] { color:#8be0b0; }
   .lib-grid { flex:1 1 0; min-height:0; overflow-x:hidden; overflow-y:auto; scrollbar-gutter:stable; display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); grid-auto-rows:max-content; align-items:start; align-content:start; gap:14px; padding:4px 4px 14px 0; }
   .lib-empty { grid-column:1/-1; display:grid; place-items:center; min-height:220px; padding:24px; border:1px dashed var(--lumiverse-border); border-radius:14px; color:var(--lumiverse-text-muted); text-align:center; }
@@ -496,11 +497,22 @@ export function setup(ctx) {
   async function deleteSelected() {
     if (!browserState || browserState.deleting || browserState.selected.size === 0) return
     const ids = [...browserState.selected]
+    const knownProtectedCount = ids.filter((id) => browserState.protectedIds.has(id)).length
+    const uncheckedCount = ids.length - knownProtectedCount
+    const title = knownProtectedCount > 0
+      ? `${knownProtectedCount} selected image${knownProtectedCount === 1 ? ' appears' : 's appear'} protected`
+      : `Safely delete ${ids.length} selected image${ids.length === 1 ? '' : 's'}?`
+    const knownProtectionWarning = knownProtectedCount > 0
+      ? `${knownProtectedCount} selected image${knownProtectedCount === 1 ? ' is' : 's are'} already known to be referenced and will probably remain. `
+      : ''
+    const deletionWarning = uncheckedCount > 0
+      ? `${uncheckedCount}${knownProtectedCount > 0 ? ' other' : ''} selected image${uncheckedCount === 1 ? '' : 's'} will be checked and permanently deleted only if unused. `
+      : 'Lumiverse can check again in case the references have since been removed. '
     const { confirmed } = await ctx.ui.showConfirm({
-      title: `Safely delete ${ids.length} selected image${ids.length === 1 ? '' : 's'}?`,
-      message: 'Lumiverse will permanently delete only images with no known internal references. Referenced images will remain protected. This cannot be undone for images that are deleted.',
-      variant: 'danger',
-      confirmLabel: 'Delete unused',
+      title,
+      message: `${knownProtectionWarning}${deletionWarning}Any referenced images will stay visible and be labeled Referenced afterward. Deletion cannot be undone.`,
+      variant: knownProtectedCount > 0 ? 'warning' : 'danger',
+      confirmLabel: uncheckedCount === 0 ? 'Check again' : 'Delete unused',
     })
     if (!confirmed || !browserState) return
 
@@ -530,10 +542,12 @@ export function setup(ctx) {
     browserState.deleting = false
     browserState.status = [
       `${summary.deleted} deleted`,
-      `${summary.protected} referenced and protected`,
+      summary.protected
+        ? `${summary.protected} kept because ${summary.protected === 1 ? 'it is' : 'they are'} referenced (still shown)`
+        : null,
       summary.failed ? `${summary.failed} failed` : null,
     ].filter(Boolean).join(' · ')
-    browserState.tone = summary.failed ? 'error' : 'success'
+    browserState.tone = summary.failed ? 'error' : summary.protected ? 'warning' : 'success'
     renderBrowser()
   }
 
