@@ -5,6 +5,7 @@ import {
   getPageWindow,
   isGeneratedImage,
   mapWithConcurrency,
+  pageNumberToOffset,
   summarizeDeleteResults,
 } from './model.js'
 
@@ -47,16 +48,29 @@ const STYLES = `
   .lib-generated { color:var(--lumiverse-primary); font-weight:700; }
   .lib-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-top:12px; border-top:1px solid var(--lumiverse-border); }
   .lib-footer-actions { display:flex; align-items:center; gap:9px; }
+  .lib-page-jump { display:inline-flex; align-items:center; gap:6px; color:var(--lumiverse-text-muted); font-size:12px; white-space:nowrap; }
+  .lib-page-input { width:58px; box-sizing:border-box; border:1px solid var(--lumiverse-border); border-radius:8px; padding:7px 6px; background:var(--lumiverse-fill); color:var(--lumiverse-text); font:inherit; text-align:center; }
+  .lib-page-input:focus { border-color:var(--lumiverse-primary); outline:2px solid color-mix(in srgb, var(--lumiverse-primary) 26%, transparent); outline-offset:1px; }
   .lib-preview-shell { display:grid; grid-template-rows:minmax(0, 1fr) auto; width:100%; height:min(800px, calc(100vh - 128px)); min-height:280px; gap:12px; }
+  .lib-preview-stage { position:relative; display:grid; min-height:0; overflow:hidden; border-radius:10px; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 72%, #000 28%); }
+  .lib-preview-media { display:grid; place-items:center; width:100%; height:100%; min-height:0; overflow:hidden; }
   .lib-full-media { display:block; width:100%; height:100%; min-height:0; object-fit:contain; border-radius:10px; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 72%, #000 28%); }
+  .lib-preview-loading, .lib-preview-error { display:grid; place-items:center; width:100%; height:100%; min-height:220px; padding:24px; box-sizing:border-box; color:var(--lumiverse-text-muted); text-align:center; }
+  .lib-preview-error { color:#ff9d9d; }
+  .lib-preview-nav { position:absolute; z-index:2; top:50%; display:grid; place-items:center; width:46px; height:64px; border:1px solid rgba(255,255,255,.2); border-radius:12px; background:rgba(15,23,42,.72); color:#fff; font:inherit; font-size:34px; line-height:1; cursor:pointer; transform:translateY(-50%); backdrop-filter:blur(6px); }
+  .lib-preview-nav:hover:not(:disabled) { background:rgba(15,23,42,.9); }
+  .lib-preview-nav:disabled { cursor:default; opacity:.28; }
+  .lib-preview-nav-previous { left:12px; }
+  .lib-preview-nav-next { right:12px; }
   .lib-preview-meta { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px 16px; color:var(--lumiverse-text-muted); font-size:11px; }
+  .lib-preview-name { flex:1 1 100%; overflow:hidden; color:var(--lumiverse-text); font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
   @media (max-width:700px) {
     .lib-shell { height:calc(100vh - 112px); min-height:360px; }
     .lib-toolbar { grid-template-columns:1fr auto; }
     .lib-toggle { grid-column:1/-1; }
     .lib-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:9px; }
     .lib-footer { align-items:stretch; flex-direction:column; }
-    .lib-footer-actions { justify-content:space-between; }
+    .lib-footer-actions { flex-wrap:wrap; justify-content:space-between; }
   }
 `
 
@@ -247,45 +261,107 @@ export function setup(ctx) {
     void loadPage(0)
   }
 
-  async function openPreview(image) {
+  function openPreview(image, previewImages) {
     if (!browserState) return
-    browserState.status = `Loading ${image.original_filename || image.id}…`
-    browserState.tone = ''
-    renderBrowser()
-    try {
-      const response = await rpc('image_browser_get', { imageId: image.id })
-      const fullImage = response.result
-      if (!fullImage) throw new Error('The image is no longer available.')
-      const preview = ctx.ui.showModal({
-        title: fullImage.original_filename || 'Image preview',
-        width: 1200,
-        maxHeight: Math.min(940, Math.max(420, window.innerHeight - 40)),
-      })
-      const shell = createElement('div', 'lib-preview-shell')
-      const isVideo = String(fullImage.mime_type || '').startsWith('video/')
-      const media = createElement(isVideo ? 'video' : 'img', 'lib-full-media')
-      media.src = fullImage.url
-      if (isVideo) {
-        media.controls = true
-        media.preload = 'metadata'
-      } else {
-        media.alt = fullImage.original_filename || 'Full image preview'
-      }
-      const meta = createElement('div', 'lib-preview-meta')
-      meta.append(
-        createElement('span', '', formatDimensions(fullImage)),
-        createElement('span', '', fullImage.mime_type || 'Unknown media type'),
-        createElement('span', '', relativeDate(fullImage.created_at)),
-      )
-      shell.append(media, meta)
-      preview.root.appendChild(shell)
-      browserState.status = `Previewing ${fullImage.original_filename || fullImage.id}.`
-    } catch (error) {
-      browserState.status = error instanceof Error ? error.message : String(error)
-      browserState.tone = 'error'
-    } finally {
-      renderBrowser()
+    const candidates = Array.isArray(previewImages) && previewImages.length > 0
+      ? [...previewImages]
+      : [image]
+    let currentIndex = Math.max(0, candidates.findIndex((candidate) => candidate.id === image.id))
+    let loading = false
+    let dismissed = false
+    let loadSequence = 0
+
+    const preview = ctx.ui.showModal({
+      title: 'Image preview',
+      width: 1200,
+      maxHeight: Math.min(940, Math.max(420, window.innerHeight - 40)),
+    })
+    const shell = createElement('div', 'lib-preview-shell')
+    const stage = createElement('div', 'lib-preview-stage')
+    const mediaHost = createElement('div', 'lib-preview-media')
+    const previousButton = createElement('button', 'lib-preview-nav lib-preview-nav-previous', '‹')
+    previousButton.type = 'button'
+    previousButton.title = 'Previous image'
+    previousButton.setAttribute('aria-label', 'Previous image')
+    const nextButton = createElement('button', 'lib-preview-nav lib-preview-nav-next', '›')
+    nextButton.type = 'button'
+    nextButton.title = 'Next image'
+    nextButton.setAttribute('aria-label', 'Next image')
+    const meta = createElement('div', 'lib-preview-meta')
+
+    function updateNavigation() {
+      previousButton.disabled = loading || currentIndex <= 0
+      nextButton.disabled = loading || currentIndex >= candidates.length - 1
     }
+
+    async function showImage(index) {
+      if (dismissed || loading || index < 0 || index >= candidates.length) return
+      currentIndex = index
+      loading = true
+      loadSequence += 1
+      const sequence = loadSequence
+      const target = candidates[currentIndex]
+      updateNavigation()
+      mediaHost.replaceChildren(createElement('div', 'lib-preview-loading', `Loading ${target.original_filename || target.id}…`))
+      meta.replaceChildren(
+        createElement('span', 'lib-preview-name', target.original_filename || target.id),
+        createElement('span', '', `${currentIndex + 1} of ${candidates.length}`),
+      )
+
+      try {
+        const response = await rpc('image_browser_get', { imageId: target.id })
+        if (dismissed || sequence !== loadSequence) return
+        const fullImage = response.result
+        if (!fullImage) throw new Error('The image is no longer available.')
+        const isVideo = String(fullImage.mime_type || '').startsWith('video/')
+        const media = createElement(isVideo ? 'video' : 'img', 'lib-full-media')
+        media.src = fullImage.url
+        if (isVideo) {
+          media.controls = true
+          media.preload = 'metadata'
+        } else {
+          media.alt = fullImage.original_filename || 'Full image preview'
+        }
+        mediaHost.replaceChildren(media)
+        meta.replaceChildren(
+          createElement('span', 'lib-preview-name', fullImage.original_filename || fullImage.id),
+          createElement('span', '', formatDimensions(fullImage)),
+          createElement('span', '', fullImage.mime_type || 'Unknown media type'),
+          createElement('span', '', relativeDate(fullImage.created_at)),
+          createElement('span', '', `${currentIndex + 1} of ${candidates.length}`),
+        )
+      } catch (error) {
+        if (dismissed || sequence !== loadSequence) return
+        mediaHost.replaceChildren(createElement('div', 'lib-preview-error', error instanceof Error ? error.message : String(error)))
+      } finally {
+        if (!dismissed && sequence === loadSequence) {
+          loading = false
+          updateNavigation()
+        }
+      }
+    }
+
+    previousButton.addEventListener('click', () => void showImage(currentIndex - 1))
+    nextButton.addEventListener('click', () => void showImage(currentIndex + 1))
+    shell.tabIndex = 0
+    shell.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft' && !previousButton.disabled) {
+        event.preventDefault()
+        void showImage(currentIndex - 1)
+      } else if (event.key === 'ArrowRight' && !nextButton.disabled) {
+        event.preventDefault()
+        void showImage(currentIndex + 1)
+      }
+    })
+    preview.onDismiss(() => {
+      dismissed = true
+      loadSequence += 1
+    })
+    stage.append(mediaHost, previousButton, nextButton)
+    shell.append(stage, meta)
+    preview.root.appendChild(shell)
+    window.setTimeout(() => shell.focus(), 0)
+    void showImage(currentIndex)
   }
 
   async function deleteSelected() {
@@ -332,7 +408,7 @@ export function setup(ctx) {
     renderBrowser()
   }
 
-  function renderCard(image) {
+  function renderCard(image, previewImages) {
     const card = createElement('article', 'lib-card')
     card.dataset.selected = String(browserState.selected.has(image.id))
     card.dataset.protected = String(browserState.protectedIds.has(image.id))
@@ -364,7 +440,7 @@ export function setup(ctx) {
       fallback.style.display = 'grid'
     })
     previewButton.append(thumbnail, fallback)
-    previewButton.addEventListener('click', () => void openPreview(image))
+    previewButton.addEventListener('click', () => openPreview(image, previewImages))
 
     const meta = createElement('div', 'lib-meta')
     const filename = createElement('div', 'lib-filename', image.original_filename || image.id)
@@ -429,7 +505,7 @@ export function setup(ctx) {
     if (visibleImages.length === 0) {
       grid.appendChild(createElement('div', 'lib-empty', state.loading ? 'Loading…' : 'No loaded images match this view.'))
     } else {
-      for (const image of visibleImages) grid.appendChild(renderCard(image))
+      for (const image of visibleImages) grid.appendChild(renderCard(image, visibleImages))
     }
 
     const footer = createElement('div', 'lib-footer')
@@ -452,6 +528,35 @@ export function setup(ctx) {
     previousButton.type = 'button'
     previousButton.disabled = !page.hasPrevious || state.loading || state.deleting
     previousButton.addEventListener('click', () => void loadPage(page.previousOffset))
+    const pageJump = createElement('label', 'lib-page-jump')
+    pageJump.appendChild(document.createTextNode('Page'))
+    const pageInput = createElement('input', 'lib-page-input')
+    pageInput.type = 'number'
+    pageInput.inputMode = 'numeric'
+    pageInput.min = '1'
+    pageInput.max = String(page.pageCount)
+    pageInput.step = '1'
+    pageInput.value = String(page.pageNumber)
+    pageInput.disabled = state.loading || state.deleting
+    pageInput.setAttribute('aria-label', `Page number, 1 to ${page.pageCount}`)
+    const goToEnteredPage = () => {
+      const requestedOffset = pageNumberToOffset(pageInput.value, page.pageCount)
+      if (requestedOffset === null) {
+        pageInput.setCustomValidity(`Enter a whole page number from 1 to ${page.pageCount}.`)
+        pageInput.reportValidity()
+        return
+      }
+      pageInput.setCustomValidity('')
+      if (requestedOffset !== state.offset) void loadPage(requestedOffset)
+    }
+    pageInput.addEventListener('input', () => pageInput.setCustomValidity(''))
+    pageInput.addEventListener('change', goToEnteredPage)
+    pageInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return
+      event.preventDefault()
+      goToEnteredPage()
+    })
+    pageJump.append(pageInput, document.createTextNode(`of ${page.pageCount}`))
     const nextButton = createElement('button', 'lib-button lib-button-quiet', 'Next')
     nextButton.type = 'button'
     nextButton.disabled = !page.hasNext || state.loading || state.deleting
@@ -460,7 +565,7 @@ export function setup(ctx) {
     deleteButton.type = 'button'
     deleteButton.disabled = state.selected.size === 0 || state.loading || state.deleting || state.permissionGranted === false
     deleteButton.addEventListener('click', () => void deleteSelected())
-    footerActions.append(previousButton, nextButton, deleteButton)
+    footerActions.append(previousButton, pageJump, nextButton, deleteButton)
     footer.append(selectAllLabel, footerActions)
 
     state.root.append(summary, toolbar, status, grid, footer)

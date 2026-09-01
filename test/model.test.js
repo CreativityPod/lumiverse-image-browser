@@ -6,6 +6,7 @@ import {
   getPageWindow,
   isGeneratedImage,
   mapWithConcurrency,
+  pageNumberToOffset,
   summarizeDeleteResults,
 } from '../src/model.js'
 
@@ -54,6 +55,17 @@ test('calculates fixed 60-image page windows without accumulating prior pages', 
     hasPrevious: true,
     hasNext: false,
   })
+})
+
+test('validates direct page entry and converts it to an offset', () => {
+  assert.equal(pageNumberToOffset('1', 20), 0)
+  assert.equal(pageNumberToOffset('20', 20), 1140)
+  assert.equal(pageNumberToOffset('', 20), null)
+  assert.equal(pageNumberToOffset('0', 20), null)
+  assert.equal(pageNumberToOffset('21', 20), null)
+  assert.equal(pageNumberToOffset('1.5', 20), null)
+  assert.equal(pageNumberToOffset('1e1', 20), null)
+  assert.equal(pageNumberToOffset('not-a-page', 20), null)
 })
 
 test('summarizes safe-delete outcomes', () => {

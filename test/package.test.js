@@ -26,6 +26,9 @@ test('frontend uses contained square thumbnails and fixed-page navigation', asyn
   assert.match(source, /overflow-y:auto/)
   assert.match(source, /'Previous'/)
   assert.match(source, /'Next'/)
+  assert.match(source, /pageNumberToOffset/)
+  assert.match(source, /'Previous image'/)
+  assert.match(source, /'Next image'/)
   assert.doesNotMatch(source, /'Load more'/)
 })
 

@@ -27,6 +27,15 @@ export function getPageWindow(offset, itemCount, total, pageSize = PAGE_SIZE) {
   }
 }
 
+export function pageNumberToOffset(value, pageCount, pageSize = PAGE_SIZE) {
+  const text = String(value ?? '').trim()
+  if (!/^\d+$/.test(text)) return null
+  const pageNumber = Number(text)
+  const normalizedPageCount = Math.max(1, Math.trunc(Number(pageCount)) || 1)
+  if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > normalizedPageCount) return null
+  return (pageNumber - 1) * clampPageSize(pageSize)
+}
+
 export function isGeneratedImage(image) {
   return typeof image?.original_filename === 'string'
     && image.original_filename.toLowerCase().startsWith('image-gen-')
