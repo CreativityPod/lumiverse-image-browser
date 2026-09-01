@@ -6,8 +6,9 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 
 - Wide, responsive thumbnail browser in a native Lumiverse modal
 - Drawer launcher, command-palette entry, and chat Extras action
-- Paginated browsing with search and a generated-image filter
+- Paginated browsing with search and a generated-image filter with correctly filtered totals
 - Remembers the last successfully loaded page in the current browser profile
+- Remembers the generated-only preference and recently confirmed reference badges
 - Full-resolution, contained image previews; stored videos use native controls
 - Multi-selection across loaded pages
 - Safe bulk cleanup through Lumiverse's existing `unused=true` deletion path
@@ -17,7 +18,7 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 
 The extension requests only the privileged `images` permission. It never calls the force-delete Spindle methods. A cleanup request is sent separately for each selected asset, and Lumiverse's own `deleteImageIfUnreferenced()` check decides whether the original, thumbnails, and database row may be removed.
 
-Reference status is not currently exposed as a non-destructive Spindle query. Images therefore begin with unknown status; an image that Lumiverse refuses to delete is marked **Referenced** for the rest of the browser session.
+Reference status is not currently exposed as a non-destructive Spindle query. Images therefore begin with unknown status; an image that Lumiverse refuses to delete is marked **Referenced** and that observation is cached in the current browser profile for up to 90 days. The badge tooltip explains that the cached status may have changed and the image can be checked again.
 
 ## Install
 

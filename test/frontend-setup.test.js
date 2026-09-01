@@ -2,10 +2,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  GENERATED_ONLY_STORAGE_KEY,
   LAST_PAGE_STORAGE_KEY,
+  REFERENCED_IMAGES_STORAGE_KEY,
+  REFERENCED_IMAGE_CACHE_TTL_MS,
+  readGeneratedOnly,
   readLastPageNumber,
+  readReferencedImageCache,
   setup,
+  writeGeneratedOnly,
   writeLastPageNumber,
+  writeReferencedImageCache,
 } from '../src/frontend.js'
 
 class FakeElement {
@@ -135,4 +142,39 @@ test('last page preference falls back when local storage is unavailable', () => 
 
   assert.equal(readLastPageNumber(unavailableStorage), 1)
   assert.equal(writeLastPageNumber(unavailableStorage, 3), false)
+})
+
+test('generated-only preference persists safely in local storage', () => {
+  const values = new Map()
+  const storage = {
+    getItem(key) { return values.get(key) ?? null },
+    setItem(key, value) { values.set(key, value) },
+  }
+
+  assert.equal(readGeneratedOnly(storage), false)
+  assert.equal(writeGeneratedOnly(storage, true), true)
+  assert.equal(values.get(GENERATED_ONLY_STORAGE_KEY), 'true')
+  assert.equal(readGeneratedOnly(storage), true)
+  assert.equal(writeGeneratedOnly(storage, false), true)
+  assert.equal(readGeneratedOnly(storage), false)
+})
+
+test('referenced image cache persists UUID records and expires stale observations', () => {
+  const now = Date.UTC(2026, 8, 1)
+  const values = new Map()
+  const storage = {
+    getItem(key) { return values.get(key) ?? null },
+    setItem(key, value) { values.set(key, value) },
+  }
+  const records = new Map([
+    ['image-current', now],
+    ['image-expired', now - REFERENCED_IMAGE_CACHE_TTL_MS - 1],
+  ])
+
+  assert.equal(writeReferencedImageCache(storage, records), true)
+  assert.ok(values.has(REFERENCED_IMAGES_STORAGE_KEY))
+  assert.deepEqual([...readReferencedImageCache(storage, now)], [['image-current', now]])
+
+  values.set(REFERENCED_IMAGES_STORAGE_KEY, '{not-json')
+  assert.equal(readReferencedImageCache(storage, now).size, 0)
 })

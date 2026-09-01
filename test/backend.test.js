@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
 
-async function createHarness(permission = true) {
+async function createHarness(permission = true, listImplementation = null) {
   const source = await readFile(new URL('../dist/backend.js', import.meta.url), 'utf8')
   let frontendHandler
   const sent = []
@@ -20,7 +20,9 @@ async function createHarness(permission = true) {
     images: {
       list: async (options) => {
         listCalls.push(options)
-        return { data: [{ id: 'image-1' }], total: 1 }
+        return listImplementation
+          ? listImplementation(options)
+          : { data: [{ id: 'image-1' }], total: 1 }
       },
       get: async (id, options) => {
         getCalls.push({ id, options })
@@ -31,7 +33,7 @@ async function createHarness(permission = true) {
     log: { info: () => undefined },
   }
   vm.runInNewContext(source, { spindle, Error, Number, Math, String })
-  return { frontendHandler, sent, listCalls, getCalls }
+  return { frontendHandler, sent, listCalls, getCalls, eventHandlers }
 }
 
 test('lists small thumbnails for the requesting user', async () => {
@@ -53,6 +55,50 @@ test('gets a full image for preview', async () => {
     { id: 'image-1', options: { specificity: 'full', userId: 'user-1' } },
   )
   assert.equal(harness.sent[0].payload.result.url, '/api/v1/images/image-1')
+})
+
+test('paginates only generated images and invalidates the filtered cache on asset changes', async () => {
+  const allImages = [
+    { id: 'regular-1', original_filename: 'portrait.png' },
+    { id: 'generated-1', original_filename: 'image-gen-first.png' },
+    { id: 'regular-2', original_filename: 'photo.webp' },
+    { id: 'generated-2', original_filename: 'IMAGE-GEN-second.png' },
+  ]
+  const harness = await createHarness(true, (options) => ({
+    data: allImages.slice(options.offset, options.offset + options.limit),
+    total: allImages.length,
+  }))
+
+  await harness.frontendHandler({
+    type: 'image_browser_list',
+    requestId: 'generated-1',
+    limit: 1,
+    offset: 1,
+    generatedOnly: true,
+  }, 'user-1')
+
+  assert.equal(harness.listCalls.length, 1)
+  assert.equal(harness.listCalls[0].limit, 200)
+  assert.equal(harness.sent[0].payload.result.total, 2)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.sent[0].payload.result.data)),
+    [allImages[3]],
+  )
+
+  await harness.frontendHandler({
+    type: 'image_browser_list',
+    requestId: 'generated-2',
+    generatedOnly: true,
+  }, 'user-1')
+  assert.equal(harness.listCalls.length, 1)
+
+  harness.eventHandlers.get('IMAGE_UPLOADED')({}, 'user-1')
+  await harness.frontendHandler({
+    type: 'image_browser_list',
+    requestId: 'generated-3',
+    generatedOnly: true,
+  }, 'user-1')
+  assert.equal(harness.listCalls.length, 2)
 })
 
 test('refuses image reads when permission is absent', async () => {

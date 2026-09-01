@@ -1,4 +1,43 @@
 const MAX_PAGE_SIZE = 200
+const generatedImageCache = new Map()
+
+function isGeneratedImage(image) {
+  return typeof image?.original_filename === 'string'
+    && image.original_filename.toLowerCase().startsWith('image-gen-')
+}
+
+async function listGeneratedImages(userId) {
+  const cached = generatedImageCache.get(userId)
+  if (cached) return cached
+
+  const pending = (async () => {
+    const generatedImages = []
+    let offset = 0
+    let total = 0
+    do {
+      const result = await spindle.images.list({
+        limit: MAX_PAGE_SIZE,
+        offset,
+        specificity: 'sm',
+        userId,
+      })
+      const images = Array.isArray(result.data) ? result.data : []
+      total = Math.max(0, Number(result.total) || 0)
+      generatedImages.push(...images.filter(isGeneratedImage))
+      offset += images.length
+      if (images.length === 0) break
+    } while (offset < total)
+    return generatedImages
+  })()
+
+  generatedImageCache.set(userId, pending)
+  try {
+    return await pending
+  } catch (error) {
+    generatedImageCache.delete(userId)
+    throw error
+  }
+}
 
 function hasImagesPermission() {
   return spindle.permissions.has('images')
@@ -35,12 +74,17 @@ spindle.onFrontendMessage(async (payload, userId) => {
     if (payload.type === 'image_browser_list') {
       const limit = Math.max(1, Math.min(MAX_PAGE_SIZE, Math.trunc(Number(payload.limit)) || 60))
       const offset = Math.max(0, Math.trunc(Number(payload.offset)) || 0)
-      const result = await spindle.images.list({
-        limit,
-        offset,
-        specificity: 'sm',
-        userId,
-      })
+      const result = payload.generatedOnly === true
+        ? await listGeneratedImages(userId).then((images) => ({
+            data: images.slice(offset, offset + limit),
+            total: images.length,
+          }))
+        : await spindle.images.list({
+            limit,
+            offset,
+            specificity: 'sm',
+            userId,
+          })
       respond(userId, requestId, { ok: true, result })
       return
     }
@@ -64,6 +108,7 @@ spindle.permissions.onChanged(({ permission, granted }) => {
 
 for (const eventName of ['IMAGE_UPLOADED', 'IMAGE_DELETED']) {
   spindle.on(eventName, (_payload, userId) => {
+    generatedImageCache.delete(userId)
     spindle.sendToFrontend({ type: 'image_browser_assets_changed' }, userId)
   })
 }

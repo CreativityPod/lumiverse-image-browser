@@ -12,6 +12,10 @@ import {
 const ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>'
 const ACTION_ICON_SVG = ICON_SVG.replace('width="20" height="20"', 'width="14" height="14"')
 export const LAST_PAGE_STORAGE_KEY = 'lumiverse:image-browser:last-page:v1'
+export const GENERATED_ONLY_STORAGE_KEY = 'lumiverse:image-browser:generated-only:v1'
+export const REFERENCED_IMAGES_STORAGE_KEY = 'lumiverse:image-browser:referenced-images:v1'
+export const REFERENCED_IMAGE_CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000
+const MAX_REFERENCED_IMAGE_CACHE_SIZE = 2_000
 
 export function readLastPageNumber(storage) {
   try {
@@ -28,6 +32,66 @@ export function writeLastPageNumber(storage, pageNumber) {
   if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) return false
   try {
     storage?.setItem?.(LAST_PAGE_STORAGE_KEY, String(pageNumber))
+    return typeof storage?.setItem === 'function'
+  } catch {
+    return false
+  }
+}
+
+export function readGeneratedOnly(storage) {
+  try {
+    return storage?.getItem?.(GENERATED_ONLY_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function writeGeneratedOnly(storage, generatedOnly) {
+  try {
+    storage?.setItem?.(GENERATED_ONLY_STORAGE_KEY, String(Boolean(generatedOnly)))
+    return typeof storage?.setItem === 'function'
+  } catch {
+    return false
+  }
+}
+
+export function readReferencedImageCache(storage, now = Date.now()) {
+  try {
+    const parsed = JSON.parse(storage?.getItem?.(REFERENCED_IMAGES_STORAGE_KEY) || 'null')
+    if (parsed?.version !== 1 || !parsed.entries || typeof parsed.entries !== 'object') return new Map()
+    const minimumTimestamp = now - REFERENCED_IMAGE_CACHE_TTL_MS
+    const entries = Object.entries(parsed.entries)
+      .filter(([id, confirmedAt]) => (
+        typeof id === 'string'
+        && id.length > 0
+        && id.length <= 256
+        && Number.isFinite(confirmedAt)
+        && confirmedAt >= minimumTimestamp
+        && confirmedAt <= now
+      ))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_REFERENCED_IMAGE_CACHE_SIZE)
+    return new Map(entries)
+  } catch {
+    return new Map()
+  }
+}
+
+export function writeReferencedImageCache(storage, referencedImages) {
+  try {
+    const entries = [...referencedImages.entries()]
+      .filter(([id, confirmedAt]) => (
+        typeof id === 'string'
+        && id.length > 0
+        && id.length <= 256
+        && Number.isFinite(confirmedAt)
+      ))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_REFERENCED_IMAGE_CACHE_SIZE)
+    storage?.setItem?.(REFERENCED_IMAGES_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      entries: Object.fromEntries(entries),
+    }))
     return typeof storage?.setItem === 'function'
   } catch {
     return false
@@ -58,7 +122,7 @@ const STYLES = `
   .lib-card { position:relative; align-self:start; min-width:0; height:max-content; overflow:hidden; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); transition:border-color .16s ease, transform .16s ease; }
   .lib-card:hover { border-color:color-mix(in srgb, var(--lumiverse-primary) 55%, var(--lumiverse-border)); transform:translateY(-1px); }
   .lib-card[data-selected="true"] { border-color:var(--lumiverse-primary); box-shadow:0 0 0 1px var(--lumiverse-primary); }
-  .lib-card[data-protected="true"]::after { content:'Referenced'; position:absolute; right:8px; top:8px; padding:4px 7px; border-radius:999px; background:rgba(30,41,59,.88); color:#fff; font-size:10px; font-weight:750; pointer-events:none; }
+  .lib-reference-badge { position:absolute; z-index:2; right:8px; top:8px; padding:4px 7px; border-radius:999px; background:rgba(30,41,59,.88); color:#fff; font-size:10px; font-weight:750; cursor:help; }
   .lib-check { position:absolute; z-index:2; left:9px; top:9px; display:grid; place-items:center; width:26px; height:26px; border-radius:8px; background:rgba(15,23,42,.78); backdrop-filter:blur(5px); }
   .lib-check input { width:16px; height:16px; accent-color:var(--lumiverse-primary); cursor:pointer; }
   .lib-preview-button { display:grid; place-items:center; width:100%; aspect-ratio:1/1; min-height:0; overflow:hidden; padding:0; border:0; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 78%, #000 22%); cursor:zoom-in; }
@@ -232,7 +296,11 @@ export function setup(ctx) {
     renderBrowser()
     try {
       let resolvedOffset = requestedOffset
-      let response = await rpc('image_browser_list', { limit: PAGE_SIZE, offset: resolvedOffset })
+      let response = await rpc('image_browser_list', {
+        limit: PAGE_SIZE,
+        offset: resolvedOffset,
+        generatedOnly: state.generatedOnly,
+      })
       if (browserState !== state) return
       let result = response.result || { data: [], total: 0 }
       const resultItems = Array.isArray(result.data) ? result.data : []
@@ -240,7 +308,11 @@ export function setup(ctx) {
 
       if (resultItems.length === 0 && resultTotal > 0 && resolvedOffset >= resultTotal) {
         resolvedOffset = Math.max(0, (Math.ceil(resultTotal / PAGE_SIZE) - 1) * PAGE_SIZE)
-        response = await rpc('image_browser_list', { limit: PAGE_SIZE, offset: resolvedOffset })
+        response = await rpc('image_browser_list', {
+          limit: PAGE_SIZE,
+          offset: resolvedOffset,
+          generatedOnly: state.generatedOnly,
+        })
         if (browserState !== state) return
         result = response.result || { data: [], total: 0 }
       }
@@ -255,7 +327,7 @@ export function setup(ctx) {
       state.status = state.items.length
         ? `Showing ${page.start}–${page.end} of ${state.total} images.`
         : state.total === 0
-          ? 'No stored images were found.'
+          ? state.generatedOnly ? 'No generated images were found.' : 'No stored images were found.'
           : 'No images were found on this page.'
     } catch (error) {
       if (browserState !== state) return
@@ -275,7 +347,8 @@ export function setup(ctx) {
 
   function openBrowser() {
     if (disposed || browserModal) return
-    const rememberedPage = readLastPageNumber(pageStorage())
+    const storage = pageStorage()
+    const rememberedPage = readLastPageNumber(storage)
     const rememberedOffset = (rememberedPage - 1) * PAGE_SIZE
     const initialOffset = Number.isSafeInteger(rememberedOffset) ? rememberedOffset : 0
     browserModal = ctx.ui.showModal({
@@ -289,9 +362,9 @@ export function setup(ctx) {
       offset: initialOffset,
       total: 0,
       selected: new Set(),
-      protectedIds: new Set(),
+      protectedImages: readReferencedImageCache(storage),
       query: '',
-      generatedOnly: false,
+      generatedOnly: readGeneratedOnly(storage),
       loading: false,
       deleting: false,
       permissionGranted,
@@ -413,7 +486,7 @@ export function setup(ctx) {
   async function deleteSelected() {
     if (!browserState || browserState.deleting || browserState.selected.size === 0) return
     const ids = [...browserState.selected]
-    const knownProtectedCount = ids.filter((id) => browserState.protectedIds.has(id)).length
+    const knownProtectedCount = ids.filter((id) => browserState.protectedImages.has(id)).length
     const uncheckedCount = ids.length - knownProtectedCount
     const title = knownProtectedCount > 0
       ? `${knownProtectedCount} selected image${knownProtectedCount === 1 ? ' appears' : 's appear'} protected`
@@ -454,7 +527,10 @@ export function setup(ctx) {
     browserState.items = browserState.items.filter((image) => !deletedIds.has(image.id))
     browserState.total = Math.max(0, browserState.total - summary.deleted)
     browserState.selected.clear()
-    for (const id of protectedIds) browserState.protectedIds.add(id)
+    for (const id of deletedIds) browserState.protectedImages.delete(id)
+    const confirmedAt = Date.now()
+    for (const id of protectedIds) browserState.protectedImages.set(id, confirmedAt)
+    writeReferencedImageCache(pageStorage(), browserState.protectedImages)
     browserState.deleting = false
     browserState.status = [
       `${summary.deleted} deleted`,
@@ -470,7 +546,8 @@ export function setup(ctx) {
   function renderCard(image, previewImages) {
     const card = createElement('article', 'lib-card')
     card.dataset.selected = String(browserState.selected.has(image.id))
-    card.dataset.protected = String(browserState.protectedIds.has(image.id))
+    const referencedAt = browserState.protectedImages.get(image.id)
+    card.dataset.protected = String(Number.isFinite(referencedAt))
 
     const checkboxLabel = createElement('label', 'lib-check')
     checkboxLabel.title = 'Select image'
@@ -510,6 +587,11 @@ export function setup(ctx) {
     details.append(kind, dimensions)
     meta.append(filename, details)
     card.append(checkboxLabel, previewButton, meta)
+    if (Number.isFinite(referencedAt)) {
+      const badge = createElement('span', 'lib-reference-badge', 'Referenced')
+      badge.title = `Previously confirmed as referenced on ${new Date(referencedAt).toLocaleString()}. This cached status may have changed; select it and run the deletion check again to recheck.`
+      card.appendChild(badge)
+    }
     return card
   }
 
@@ -527,7 +609,7 @@ export function setup(ctx) {
     summary.append(
       createElement('span', '', state.total > 0
         ? `Page ${page.pageNumber} of ${page.pageCount} · ${page.start}–${page.end} of ${state.total}`
-        : '0 stored images'),
+        : state.generatedOnly ? '0 generated images' : '0 stored images'),
       createElement('span', '', `${state.selected.size} selected`),
     )
 
@@ -547,9 +629,11 @@ export function setup(ctx) {
     const generatedToggle = document.createElement('input')
     generatedToggle.type = 'checkbox'
     generatedToggle.checked = state.generatedOnly
+    generatedToggle.disabled = state.loading || state.deleting
     generatedToggle.addEventListener('change', () => {
       state.generatedOnly = generatedToggle.checked
-      renderBrowser({ preserveGridScroll: true })
+      writeGeneratedOnly(pageStorage(), state.generatedOnly)
+      void loadPage(0)
     })
     generatedLabel.append(generatedToggle, document.createTextNode('Generated only'))
     const refreshButton = createElement('button', 'lib-button lib-button-quiet', 'Refresh')
