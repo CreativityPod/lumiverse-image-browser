@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { setup } from '../src/frontend.js'
+import {
+  LAST_PAGE_STORAGE_KEY,
+  readLastPageNumber,
+  setup,
+  writeLastPageNumber,
+} from '../src/frontend.js'
 
 class FakeElement {
   constructor(tagName = 'div') {
@@ -99,4 +104,35 @@ test('frontend setup survives without secure-context UUIDs or an input bar actio
       else delete globalThis[name]
     }
   }
+})
+
+test('last page preference persists safely in local storage', () => {
+  const values = new Map()
+  const storage = {
+    getItem(key) { return values.get(key) ?? null },
+    setItem(key, value) { values.set(key, value) },
+  }
+
+  assert.equal(readLastPageNumber(storage), 1)
+  assert.equal(writeLastPageNumber(storage, 4), true)
+  assert.equal(values.get(LAST_PAGE_STORAGE_KEY), '4')
+  assert.equal(readLastPageNumber(storage), 4)
+
+  values.set(LAST_PAGE_STORAGE_KEY, '0')
+  assert.equal(readLastPageNumber(storage), 1)
+  values.set(LAST_PAGE_STORAGE_KEY, '2.5')
+  assert.equal(readLastPageNumber(storage), 1)
+  values.set(LAST_PAGE_STORAGE_KEY, 'not-a-page')
+  assert.equal(readLastPageNumber(storage), 1)
+  assert.equal(writeLastPageNumber(storage, 0), false)
+})
+
+test('last page preference falls back when local storage is unavailable', () => {
+  const unavailableStorage = {
+    getItem() { throw new Error('Storage is blocked') },
+    setItem() { throw new Error('Storage is blocked') },
+  }
+
+  assert.equal(readLastPageNumber(unavailableStorage), 1)
+  assert.equal(writeLastPageNumber(unavailableStorage, 3), false)
 })

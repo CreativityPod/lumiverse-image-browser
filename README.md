@@ -7,6 +7,7 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 - Wide, responsive thumbnail browser in a native Lumiverse modal
 - Drawer launcher, command-palette entry, and chat Extras action
 - Paginated browsing with search and a generated-image filter
+- Remembers the last successfully loaded page in the current browser profile
 - Full-resolution, contained image previews; stored videos use native controls
 - Multi-selection across loaded pages
 - Safe bulk cleanup through Lumiverse's existing `unused=true` deletion path

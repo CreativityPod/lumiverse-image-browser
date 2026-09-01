@@ -11,6 +11,28 @@ import {
 
 const ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>'
 const ACTION_ICON_SVG = ICON_SVG.replace('width="20" height="20"', 'width="14" height="14"')
+export const LAST_PAGE_STORAGE_KEY = 'lumiverse:image-browser:last-page:v1'
+
+export function readLastPageNumber(storage) {
+  try {
+    const value = storage?.getItem?.(LAST_PAGE_STORAGE_KEY)
+    if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return 1
+    const pageNumber = Number(value)
+    return Number.isSafeInteger(pageNumber) ? pageNumber : 1
+  } catch {
+    return 1
+  }
+}
+
+export function writeLastPageNumber(storage, pageNumber) {
+  if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) return false
+  try {
+    storage?.setItem?.(LAST_PAGE_STORAGE_KEY, String(pageNumber))
+    return typeof storage?.setItem === 'function'
+  } catch {
+    return false
+  }
+}
 
 const STYLES = `
   .lib-launcher { display:grid; gap:14px; padding:18px; color:var(--lumiverse-text); }
@@ -107,6 +129,14 @@ export function setup(ctx) {
   let permissionGranted = null
   let disposed = false
 
+  function pageStorage() {
+    try {
+      return window.localStorage
+    } catch {
+      return null
+    }
+  }
+
   function rpc(type, payload = {}) {
     requestSequence += 1
     const requestId = `image-browser-${Date.now().toString(36)}-${requestSequence.toString(36)}`
@@ -200,15 +230,27 @@ export function setup(ctx) {
     state.tone = ''
     renderBrowser()
     try {
-      const response = await rpc('image_browser_list', { limit: PAGE_SIZE, offset: requestedOffset })
+      let resolvedOffset = requestedOffset
+      let response = await rpc('image_browser_list', { limit: PAGE_SIZE, offset: resolvedOffset })
       if (browserState !== state) return
-      const result = response.result || { data: [], total: 0 }
+      let result = response.result || { data: [], total: 0 }
+      const resultItems = Array.isArray(result.data) ? result.data : []
+      const resultTotal = Math.max(0, Number(result.total) || 0)
+
+      if (resultItems.length === 0 && resultTotal > 0 && resolvedOffset >= resultTotal) {
+        resolvedOffset = Math.max(0, (Math.ceil(resultTotal / PAGE_SIZE) - 1) * PAGE_SIZE)
+        response = await rpc('image_browser_list', { limit: PAGE_SIZE, offset: resolvedOffset })
+        if (browserState !== state) return
+        result = response.result || { data: [], total: 0 }
+      }
+
       state.items = Array.isArray(result.data) ? result.data : []
       state.total = Math.max(0, Number(result.total) || 0)
-      state.offset = requestedOffset
+      state.offset = resolvedOffset
       state.permissionGranted = true
       permissionGranted = true
       const page = getPageWindow(state.offset, state.items.length, state.total)
+      writeLastPageNumber(pageStorage(), page.pageNumber)
       state.status = state.items.length
         ? `Showing ${page.start}–${page.end} of ${state.total} images.`
         : state.total === 0
@@ -232,6 +274,9 @@ export function setup(ctx) {
 
   function openBrowser() {
     if (disposed || browserModal) return
+    const rememberedPage = readLastPageNumber(pageStorage())
+    const rememberedOffset = (rememberedPage - 1) * PAGE_SIZE
+    const initialOffset = Number.isSafeInteger(rememberedOffset) ? rememberedOffset : 0
     browserModal = ctx.ui.showModal({
       title: 'Image Browser',
       width: 1120,
@@ -240,7 +285,7 @@ export function setup(ctx) {
     browserState = {
       root: browserModal.root,
       items: [],
-      offset: 0,
+      offset: initialOffset,
       total: 0,
       selected: new Set(),
       protectedIds: new Set(),
@@ -258,7 +303,7 @@ export function setup(ctx) {
       browserState = null
     })
     renderBrowser()
-    void loadPage(0)
+    void loadPage(initialOffset)
   }
 
   function openPreview(image, previewImages) {
