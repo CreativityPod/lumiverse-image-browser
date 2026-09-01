@@ -551,7 +551,7 @@ export function setup(ctx) {
     checkbox.addEventListener('change', () => {
       if (checkbox.checked) browserState.selected.add(image.id)
       else browserState.selected.delete(image.id)
-      renderBrowser()
+      renderBrowser({ preserveGridScroll: true })
     })
     checkboxLabel.appendChild(checkbox)
 
@@ -583,9 +583,12 @@ export function setup(ctx) {
     return card
   }
 
-  function renderBrowser() {
+  function renderBrowser({ preserveGridScroll = false } = {}) {
     if (!browserState?.root) return
     const state = browserState
+    const previousGridScrollTop = preserveGridScroll
+      ? Math.max(0, Number(state.root.querySelector('.lib-grid')?.scrollTop) || 0)
+      : 0
     const visibleImages = filterImages(state.items, state.query, state.generatedOnly)
     const page = getPageWindow(state.offset, state.items.length, state.total)
     state.root.replaceChildren()
@@ -605,7 +608,7 @@ export function setup(ctx) {
     search.value = state.query
     search.addEventListener('input', () => {
       state.query = search.value
-      renderBrowser()
+      renderBrowser({ preserveGridScroll: true })
       const replacement = state.root.querySelector('.lib-search')
       replacement?.focus()
       replacement?.setSelectionRange(state.query.length, state.query.length)
@@ -616,7 +619,7 @@ export function setup(ctx) {
     generatedToggle.checked = state.generatedOnly
     generatedToggle.addEventListener('change', () => {
       state.generatedOnly = generatedToggle.checked
-      renderBrowser()
+      renderBrowser({ preserveGridScroll: true })
     })
     generatedLabel.append(generatedToggle, document.createTextNode('Generated only'))
     const refreshButton = createElement('button', 'lib-button lib-button-quiet', 'Refresh')
@@ -648,7 +651,7 @@ export function setup(ctx) {
         if (selectAll.checked) state.selected.add(image.id)
         else state.selected.delete(image.id)
       }
-      renderBrowser()
+      renderBrowser({ preserveGridScroll: true })
     })
     selectAllLabel.append(selectAll, document.createTextNode('Select visible'))
 
@@ -698,6 +701,7 @@ export function setup(ctx) {
     footer.append(selectAllLabel, footerActions)
 
     state.root.append(summary, toolbar, status, grid, footer)
+    if (preserveGridScroll) grid.scrollTop = previousGridScrollTop
   }
 
   renderLauncher()

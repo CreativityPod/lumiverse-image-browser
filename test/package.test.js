@@ -32,6 +32,13 @@ test('frontend uses contained square thumbnails and fixed-page navigation', asyn
   assert.doesNotMatch(source, /'Load more'/)
 })
 
+test('selection rerenders preserve the image grid scroll position', async () => {
+  const source = await readFile(new URL('../src/frontend.js', import.meta.url), 'utf8')
+  assert.match(source, /renderBrowser\(\{ preserveGridScroll: true \}\)/)
+  assert.match(source, /previousGridScrollTop/)
+  assert.match(source, /grid\.scrollTop = previousGridScrollTop/)
+})
+
 test('built frontend is self-contained for Lumiverse Blob URL loading', async () => {
   const source = await readFile(new URL('../dist/frontend.js', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /from\s+['"]\.\/model\.js['"]/)
