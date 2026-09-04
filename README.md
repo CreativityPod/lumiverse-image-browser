@@ -6,9 +6,9 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 
 - Wide, responsive thumbnail browser in a native Lumiverse modal
 - Drawer launcher, command-palette entry, and chat Extras action
-- Paginated browsing with search and a generated-image filter with correctly filtered totals
+- Paginated browsing with All, Generated, and Non-generated views and correctly filtered totals
 - Remembers the last successfully loaded page in the current browser profile
-- Remembers the generated-only preference and recently confirmed reference badges
+- Remembers the selected image-type view and recently confirmed reference badges
 - Full-resolution, contained image previews; stored videos use native controls
 - Multi-selection across loaded pages
 - Safe bulk cleanup through Lumiverse's existing `unused=true` deletion path
@@ -47,5 +47,5 @@ npm run check
 ## Known boundaries
 
 - Accurate reference badges cannot be displayed before a safe deletion attempt with the current public Spindle API.
-- Search filters the pages loaded into the modal; use **Load more** to expand the searchable set.
+- Search filters the currently loaded page; use the page controls to browse the rest of the collection.
 - The extension uses Lumiverse's authenticated image URLs and must run inside the signed-in Lumiverse application.

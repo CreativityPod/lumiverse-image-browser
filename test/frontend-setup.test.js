@@ -3,14 +3,15 @@ import test from 'node:test'
 
 import {
   GENERATED_ONLY_STORAGE_KEY,
+  IMAGE_FILTER_STORAGE_KEY,
   LAST_PAGE_STORAGE_KEY,
   REFERENCED_IMAGES_STORAGE_KEY,
   REFERENCED_IMAGE_CACHE_TTL_MS,
-  readGeneratedOnly,
+  readImageFilter,
   readLastPageNumber,
   readReferencedImageCache,
   setup,
-  writeGeneratedOnly,
+  writeImageFilter,
   writeLastPageNumber,
   writeReferencedImageCache,
 } from '../src/frontend.js'
@@ -144,19 +145,23 @@ test('last page preference falls back when local storage is unavailable', () => 
   assert.equal(writeLastPageNumber(unavailableStorage, 3), false)
 })
 
-test('generated-only preference persists safely in local storage', () => {
+test('image filter preference persists and migrates generated-only local storage', () => {
   const values = new Map()
   const storage = {
     getItem(key) { return values.get(key) ?? null },
     setItem(key, value) { values.set(key, value) },
+    removeItem(key) { values.delete(key) },
   }
 
-  assert.equal(readGeneratedOnly(storage), false)
-  assert.equal(writeGeneratedOnly(storage, true), true)
-  assert.equal(values.get(GENERATED_ONLY_STORAGE_KEY), 'true')
-  assert.equal(readGeneratedOnly(storage), true)
-  assert.equal(writeGeneratedOnly(storage, false), true)
-  assert.equal(readGeneratedOnly(storage), false)
+  assert.equal(readImageFilter(storage), 'all')
+  values.set(GENERATED_ONLY_STORAGE_KEY, 'true')
+  assert.equal(readImageFilter(storage), 'generated')
+
+  assert.equal(writeImageFilter(storage, 'non-generated'), true)
+  assert.equal(values.get(IMAGE_FILTER_STORAGE_KEY), 'non-generated')
+  assert.equal(values.has(GENERATED_ONLY_STORAGE_KEY), false)
+  assert.equal(readImageFilter(storage), 'non-generated')
+  assert.equal(writeImageFilter(storage, 'invalid'), false)
 })
 
 test('referenced image cache persists UUID records and expires stale observations', () => {

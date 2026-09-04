@@ -41,10 +41,12 @@ export function isGeneratedImage(image) {
     && image.original_filename.toLowerCase().startsWith('image-gen-')
 }
 
-export function filterImages(images, query, generatedOnly) {
+export function filterImages(images, query, imageFilter = 'all') {
   const needle = String(query || '').trim().toLowerCase()
   return images.filter((image) => {
-    if (generatedOnly && !isGeneratedImage(image)) return false
+    const generated = isGeneratedImage(image)
+    if (imageFilter === 'generated' && !generated) return false
+    if (imageFilter === 'non-generated' && generated) return false
     if (!needle) return true
     return [
       image.id,

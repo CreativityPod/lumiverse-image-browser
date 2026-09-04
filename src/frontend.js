@@ -12,6 +12,7 @@ import {
 const ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>'
 const ACTION_ICON_SVG = ICON_SVG.replace('width="20" height="20"', 'width="14" height="14"')
 export const LAST_PAGE_STORAGE_KEY = 'lumiverse:image-browser:last-page:v1'
+export const IMAGE_FILTER_STORAGE_KEY = 'lumiverse:image-browser:image-filter:v2'
 export const GENERATED_ONLY_STORAGE_KEY = 'lumiverse:image-browser:generated-only:v1'
 export const REFERENCED_IMAGES_STORAGE_KEY = 'lumiverse:image-browser:referenced-images:v1'
 export const REFERENCED_IMAGE_CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000
@@ -38,17 +39,21 @@ export function writeLastPageNumber(storage, pageNumber) {
   }
 }
 
-export function readGeneratedOnly(storage) {
+export function readImageFilter(storage) {
   try {
-    return storage?.getItem?.(GENERATED_ONLY_STORAGE_KEY) === 'true'
+    const value = storage?.getItem?.(IMAGE_FILTER_STORAGE_KEY)
+    if (value === 'all' || value === 'generated' || value === 'non-generated') return value
+    return storage?.getItem?.(GENERATED_ONLY_STORAGE_KEY) === 'true' ? 'generated' : 'all'
   } catch {
-    return false
+    return 'all'
   }
 }
 
-export function writeGeneratedOnly(storage, generatedOnly) {
+export function writeImageFilter(storage, imageFilter) {
+  if (imageFilter !== 'all' && imageFilter !== 'generated' && imageFilter !== 'non-generated') return false
   try {
-    storage?.setItem?.(GENERATED_ONLY_STORAGE_KEY, String(Boolean(generatedOnly)))
+    storage?.setItem?.(IMAGE_FILTER_STORAGE_KEY, imageFilter)
+    storage?.removeItem?.(GENERATED_ONLY_STORAGE_KEY)
     return typeof storage?.setItem === 'function'
   } catch {
     return false
@@ -112,7 +117,14 @@ const STYLES = `
   .lib-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 0 12px; color:var(--lumiverse-text-muted); font-size:12px; }
   .lib-toolbar { display:grid; grid-template-columns:minmax(180px, 1fr) auto auto; align-items:center; gap:10px; padding-bottom:12px; border-bottom:1px solid var(--lumiverse-border); }
   .lib-search { width:100%; min-width:0; box-sizing:border-box; border:1px solid var(--lumiverse-border); border-radius:10px; padding:9px 11px; background:var(--lumiverse-fill); color:var(--lumiverse-text); font:inherit; }
-  .lib-toggle, .lib-select-all { display:inline-flex; align-items:center; gap:7px; color:var(--lumiverse-text-muted); font-size:12px; white-space:nowrap; }
+  .lib-filter-group { display:inline-flex; align-items:center; padding:2px; border:1px solid var(--lumiverse-border); border-radius:10px; background:var(--lumiverse-fill-subtle); }
+  .lib-filter-option { position:relative; cursor:pointer; }
+  .lib-filter-option input { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+  .lib-filter-segment { display:block; padding:7px 10px; border-radius:7px; color:var(--lumiverse-text-muted); font-size:12px; font-weight:600; line-height:1; white-space:nowrap; transition:background .16s ease, color .16s ease; }
+  .lib-filter-option input:checked + .lib-filter-segment { background:color-mix(in srgb, var(--lumiverse-primary) 18%, var(--lumiverse-fill)); color:var(--lumiverse-text); box-shadow:0 0 0 1px color-mix(in srgb, var(--lumiverse-primary) 40%, transparent); }
+  .lib-filter-option input:focus-visible + .lib-filter-segment { outline:2px solid color-mix(in srgb, var(--lumiverse-primary) 45%, transparent); outline-offset:1px; }
+  .lib-filter-option input:disabled + .lib-filter-segment { cursor:not-allowed; opacity:.5; }
+  .lib-select-all { display:inline-flex; align-items:center; gap:7px; color:var(--lumiverse-text-muted); font-size:12px; white-space:nowrap; }
   .lib-status { min-height:20px; padding:9px 2px 7px; color:var(--lumiverse-text-muted); font-size:12px; }
   .lib-status[data-tone="error"] { color:#ff9d9d; }
   .lib-status[data-tone="warning"] { color:#f6c56f; }
@@ -154,7 +166,8 @@ const STYLES = `
   @media (max-width:700px) {
     .lib-shell { height:calc(100vh - 112px); min-height:360px; }
     .lib-toolbar { grid-template-columns:1fr auto; }
-    .lib-toggle { grid-column:1/-1; }
+    .lib-filter-group { grid-column:1/-1; display:grid; grid-template-columns:repeat(3, 1fr); }
+    .lib-filter-segment { text-align:center; }
     .lib-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:9px; }
     .lib-footer { align-items:stretch; flex-direction:column; }
     .lib-footer-actions { flex-wrap:wrap; justify-content:space-between; }
@@ -299,7 +312,7 @@ export function setup(ctx) {
       let response = await rpc('image_browser_list', {
         limit: PAGE_SIZE,
         offset: resolvedOffset,
-        generatedOnly: state.generatedOnly,
+        imageFilter: state.imageFilter,
       })
       if (browserState !== state) return
       let result = response.result || { data: [], total: 0 }
@@ -311,7 +324,7 @@ export function setup(ctx) {
         response = await rpc('image_browser_list', {
           limit: PAGE_SIZE,
           offset: resolvedOffset,
-          generatedOnly: state.generatedOnly,
+          imageFilter: state.imageFilter,
         })
         if (browserState !== state) return
         result = response.result || { data: [], total: 0 }
@@ -327,7 +340,11 @@ export function setup(ctx) {
       state.status = state.items.length
         ? `Showing ${page.start}–${page.end} of ${state.total} images.`
         : state.total === 0
-          ? state.generatedOnly ? 'No generated images were found.' : 'No stored images were found.'
+          ? state.imageFilter === 'generated'
+            ? 'No generated images were found.'
+            : state.imageFilter === 'non-generated'
+              ? 'No non-generated images were found.'
+              : 'No stored images were found.'
           : 'No images were found on this page.'
     } catch (error) {
       if (browserState !== state) return
@@ -351,6 +368,8 @@ export function setup(ctx) {
     const rememberedPage = readLastPageNumber(storage)
     const rememberedOffset = (rememberedPage - 1) * PAGE_SIZE
     const initialOffset = Number.isSafeInteger(rememberedOffset) ? rememberedOffset : 0
+    const initialImageFilter = readImageFilter(storage)
+    writeImageFilter(storage, initialImageFilter)
     browserModal = ctx.ui.showModal({
       title: 'Image Browser',
       width: 1120,
@@ -364,7 +383,7 @@ export function setup(ctx) {
       selected: new Set(),
       protectedImages: readReferencedImageCache(storage),
       query: '',
-      generatedOnly: readGeneratedOnly(storage),
+      imageFilter: initialImageFilter,
       loading: false,
       deleting: false,
       permissionGranted,
@@ -601,7 +620,7 @@ export function setup(ctx) {
     const previousGridScrollTop = preserveGridScroll
       ? Math.max(0, Number(state.root.querySelector('.lib-grid')?.scrollTop) || 0)
       : 0
-    const visibleImages = filterImages(state.items, state.query, state.generatedOnly)
+    const visibleImages = filterImages(state.items, state.query, state.imageFilter)
     const page = getPageWindow(state.offset, state.items.length, state.total)
     state.root.replaceChildren()
 
@@ -609,7 +628,11 @@ export function setup(ctx) {
     summary.append(
       createElement('span', '', state.total > 0
         ? `Page ${page.pageNumber} of ${page.pageCount} · ${page.start}–${page.end} of ${state.total}`
-        : state.generatedOnly ? '0 generated images' : '0 stored images'),
+        : state.imageFilter === 'generated'
+          ? '0 generated images'
+          : state.imageFilter === 'non-generated'
+            ? '0 non-generated images'
+            : '0 stored images'),
       createElement('span', '', `${state.selected.size} selected`),
     )
 
@@ -625,22 +648,38 @@ export function setup(ctx) {
       replacement?.focus()
       replacement?.setSelectionRange(state.query.length, state.query.length)
     })
-    const generatedLabel = createElement('label', 'lib-toggle')
-    const generatedToggle = document.createElement('input')
-    generatedToggle.type = 'checkbox'
-    generatedToggle.checked = state.generatedOnly
-    generatedToggle.disabled = state.loading || state.deleting
-    generatedToggle.addEventListener('change', () => {
-      state.generatedOnly = generatedToggle.checked
-      writeGeneratedOnly(pageStorage(), state.generatedOnly)
-      void loadPage(0)
-    })
-    generatedLabel.append(generatedToggle, document.createTextNode('Generated only'))
+    const imageFilterGroup = createElement('div', 'lib-filter-group')
+    imageFilterGroup.setAttribute('role', 'radiogroup')
+    imageFilterGroup.setAttribute('aria-label', 'Image type')
+    for (const option of [
+      { value: 'all', label: 'All' },
+      { value: 'generated', label: 'Generated' },
+      { value: 'non-generated', label: 'Non-generated' },
+    ]) {
+      const optionLabel = createElement('label', 'lib-filter-option')
+      if (option.value === 'non-generated') {
+        optionLabel.title = 'Images not recognized as generated'
+      }
+      const radio = document.createElement('input')
+      radio.type = 'radio'
+      radio.name = 'image-browser-type-filter'
+      radio.value = option.value
+      radio.checked = state.imageFilter === option.value
+      radio.disabled = state.loading || state.deleting
+      radio.addEventListener('change', () => {
+        if (!radio.checked || state.imageFilter === option.value) return
+        state.imageFilter = option.value
+        writeImageFilter(pageStorage(), state.imageFilter)
+        void loadPage(0)
+      })
+      optionLabel.append(radio, createElement('span', 'lib-filter-segment', option.label))
+      imageFilterGroup.appendChild(optionLabel)
+    }
     const refreshButton = createElement('button', 'lib-button lib-button-quiet', 'Refresh')
     refreshButton.type = 'button'
     refreshButton.disabled = state.loading || state.deleting
     refreshButton.addEventListener('click', () => void loadPage(state.offset))
-    toolbar.append(search, generatedLabel, refreshButton)
+    toolbar.append(search, imageFilterGroup, refreshButton)
 
     const status = createElement('div', 'lib-status', state.permissionGranted === false
       ? 'Grant the Images permission in the Extensions panel, then refresh.'

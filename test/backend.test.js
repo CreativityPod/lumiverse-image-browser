@@ -57,7 +57,7 @@ test('gets a full image for preview', async () => {
   assert.equal(harness.sent[0].payload.result.url, '/api/v1/images/image-1')
 })
 
-test('paginates only generated images and invalidates the filtered cache on asset changes', async () => {
+test('paginates generated and non-generated images from one invalidated classification cache', async () => {
   const allImages = [
     { id: 'regular-1', original_filename: 'portrait.png' },
     { id: 'generated-1', original_filename: 'image-gen-first.png' },
@@ -74,7 +74,7 @@ test('paginates only generated images and invalidates the filtered cache on asse
     requestId: 'generated-1',
     limit: 1,
     offset: 1,
-    generatedOnly: true,
+    imageFilter: 'generated',
   }, 'user-1')
 
   assert.equal(harness.listCalls.length, 1)
@@ -87,16 +87,23 @@ test('paginates only generated images and invalidates the filtered cache on asse
 
   await harness.frontendHandler({
     type: 'image_browser_list',
-    requestId: 'generated-2',
-    generatedOnly: true,
+    requestId: 'non-generated-1',
+    limit: 1,
+    offset: 0,
+    imageFilter: 'non-generated',
   }, 'user-1')
   assert.equal(harness.listCalls.length, 1)
+  assert.equal(harness.sent[1].payload.result.total, 2)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.sent[1].payload.result.data)),
+    [allImages[0]],
+  )
 
   harness.eventHandlers.get('IMAGE_UPLOADED')({}, 'user-1')
   await harness.frontendHandler({
     type: 'image_browser_list',
     requestId: 'generated-3',
-    generatedOnly: true,
+    imageFilter: 'generated',
   }, 'user-1')
   assert.equal(harness.listCalls.length, 2)
 })

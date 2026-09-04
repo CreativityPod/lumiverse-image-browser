@@ -18,8 +18,9 @@ const images = [
 test('filters generated images and searchable ownership metadata', () => {
   assert.equal(isGeneratedImage(images[0]), true)
   assert.equal(isGeneratedImage(images[1]), false)
-  assert.deepEqual(filterImages(images, '', true).map((image) => image.id), ['a'])
-  assert.deepEqual(filterImages(images, 'CHAT-7', false).map((image) => image.id), ['b'])
+  assert.deepEqual(filterImages(images, '', 'generated').map((image) => image.id), ['a'])
+  assert.deepEqual(filterImages(images, '', 'non-generated').map((image) => image.id), ['b'])
+  assert.deepEqual(filterImages(images, 'CHAT-7', 'all').map((image) => image.id), ['b'])
   assert.equal(formatDimensions(images[0]), '1024 × 1024')
   assert.equal(formatDimensions(images[1]), 'Dimensions unavailable')
 })

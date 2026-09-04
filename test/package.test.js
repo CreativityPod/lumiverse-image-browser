@@ -35,6 +35,16 @@ test('frontend uses contained square thumbnails and fixed-page navigation', asyn
   assert.doesNotMatch(source, /'Load more'/)
 })
 
+test('frontend presents an accessible three-way image type filter', async () => {
+  const source = await readFile(new URL('../src/frontend.js', import.meta.url), 'utf8')
+  assert.match(source, /setAttribute\('role', 'radiogroup'\)/)
+  assert.match(source, /radio\.type = 'radio'/)
+  assert.match(source, /\{ value: 'all', label: 'All' \}/)
+  assert.match(source, /\{ value: 'generated', label: 'Generated' \}/)
+  assert.match(source, /\{ value: 'non-generated', label: 'Non-generated' \}/)
+  assert.doesNotMatch(source, /document\.createTextNode\('Generated only'\)/)
+})
+
 test('selection rerenders preserve the image grid scroll position', async () => {
   const source = await readFile(new URL('../src/frontend.js', import.meta.url), 'utf8')
   assert.match(source, /renderBrowser\(\{ preserveGridScroll: true \}\)/)
