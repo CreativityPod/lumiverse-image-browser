@@ -97,98 +97,6 @@ async function mapWithConcurrency(items, concurrency, worker) {
 
 const ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>'
 const ACTION_ICON_SVG = ICON_SVG.replace('width="20" height="20"', 'width="14" height="14"')
-export const LAST_PAGE_STORAGE_KEY = 'lumiverse:image-browser:last-page:v1'
-export const IMAGE_FILTER_STORAGE_KEY = 'lumiverse:image-browser:image-filter:v2'
-export const GENERATED_ONLY_STORAGE_KEY = 'lumiverse:image-browser:generated-only:v1'
-export const REFERENCED_IMAGES_STORAGE_KEY = 'lumiverse:image-browser:referenced-images:v1'
-export const REFERENCED_IMAGE_CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000
-const MAX_REFERENCED_IMAGE_CACHE_SIZE = 2_000
-
-export function readLastPageNumber(storage) {
-  try {
-    const value = storage?.getItem?.(LAST_PAGE_STORAGE_KEY)
-    if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return 1
-    const pageNumber = Number(value)
-    return Number.isSafeInteger(pageNumber) ? pageNumber : 1
-  } catch {
-    return 1
-  }
-}
-
-export function writeLastPageNumber(storage, pageNumber) {
-  if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) return false
-  try {
-    storage?.setItem?.(LAST_PAGE_STORAGE_KEY, String(pageNumber))
-    return typeof storage?.setItem === 'function'
-  } catch {
-    return false
-  }
-}
-
-export function readImageFilter(storage) {
-  try {
-    const value = storage?.getItem?.(IMAGE_FILTER_STORAGE_KEY)
-    if (value === 'all' || value === 'generated' || value === 'non-generated') return value
-    return storage?.getItem?.(GENERATED_ONLY_STORAGE_KEY) === 'true' ? 'generated' : 'all'
-  } catch {
-    return 'all'
-  }
-}
-
-export function writeImageFilter(storage, imageFilter) {
-  if (imageFilter !== 'all' && imageFilter !== 'generated' && imageFilter !== 'non-generated') return false
-  try {
-    storage?.setItem?.(IMAGE_FILTER_STORAGE_KEY, imageFilter)
-    storage?.removeItem?.(GENERATED_ONLY_STORAGE_KEY)
-    return typeof storage?.setItem === 'function'
-  } catch {
-    return false
-  }
-}
-
-export function readReferencedImageCache(storage, now = Date.now()) {
-  try {
-    const parsed = JSON.parse(storage?.getItem?.(REFERENCED_IMAGES_STORAGE_KEY) || 'null')
-    if (parsed?.version !== 1 || !parsed.entries || typeof parsed.entries !== 'object') return new Map()
-    const minimumTimestamp = now - REFERENCED_IMAGE_CACHE_TTL_MS
-    const entries = Object.entries(parsed.entries)
-      .filter(([id, confirmedAt]) => (
-        typeof id === 'string'
-        && id.length > 0
-        && id.length <= 256
-        && Number.isFinite(confirmedAt)
-        && confirmedAt >= minimumTimestamp
-        && confirmedAt <= now
-      ))
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, MAX_REFERENCED_IMAGE_CACHE_SIZE)
-    return new Map(entries)
-  } catch {
-    return new Map()
-  }
-}
-
-export function writeReferencedImageCache(storage, referencedImages) {
-  try {
-    const entries = [...referencedImages.entries()]
-      .filter(([id, confirmedAt]) => (
-        typeof id === 'string'
-        && id.length > 0
-        && id.length <= 256
-        && Number.isFinite(confirmedAt)
-      ))
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, MAX_REFERENCED_IMAGE_CACHE_SIZE)
-    storage?.setItem?.(REFERENCED_IMAGES_STORAGE_KEY, JSON.stringify({
-      version: 1,
-      entries: Object.fromEntries(entries),
-    }))
-    return typeof storage?.setItem === 'function'
-  } catch {
-    return false
-  }
-}
-
 const STYLES = `
   .lib-launcher { display:grid; gap:14px; padding:18px; color:var(--lumiverse-text); }
   .lib-launcher-card { padding:16px; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); }
@@ -293,14 +201,6 @@ export function setup(ctx) {
   let permissionGranted = null
   let disposed = false
 
-  function pageStorage() {
-    try {
-      return window.localStorage
-    } catch {
-      return null
-    }
-  }
-
   function rpc(type, payload = {}) {
     requestSequence += 1
     const requestId = `image-browser-${Date.now().toString(36)}-${requestSequence.toString(36)}`
@@ -312,6 +212,17 @@ export function setup(ctx) {
       pending.set(requestId, { resolve, reject, timer })
       ctx.sendToBackend({ type, requestId, ...payload })
     })
+  }
+
+  async function saveState(state, patch) {
+    if (disposed || !state.storageReady) return
+    try {
+      await rpc('image_browser_state_patch', { patch })
+      state.storageError = ''
+    } catch (error) {
+      state.storageError = `Could not save Image Browser preferences: ${error instanceof Error ? error.message : String(error)}`
+    }
+    if (browserState === state) renderBrowser()
   }
 
   const unsubscribeBackend = ctx.onBackendMessage((payload) => {
@@ -422,7 +333,8 @@ export function setup(ctx) {
       state.permissionGranted = true
       permissionGranted = true
       const page = getPageWindow(state.offset, state.items.length, state.total)
-      writeLastPageNumber(pageStorage(), page.pageNumber)
+      await saveState(state, { lastPage: page.pageNumber, imageFilter: state.imageFilter })
+      if (browserState !== state) return
       state.status = state.items.length
         ? `Showing ${page.start}–${page.end} of ${state.total} images.`
         : state.total === 0
@@ -448,14 +360,8 @@ export function setup(ctx) {
     }
   }
 
-  function openBrowser() {
+  async function openBrowser() {
     if (disposed || browserModal) return
-    const storage = pageStorage()
-    const rememberedPage = readLastPageNumber(storage)
-    const rememberedOffset = (rememberedPage - 1) * PAGE_SIZE
-    const initialOffset = Number.isSafeInteger(rememberedOffset) ? rememberedOffset : 0
-    const initialImageFilter = readImageFilter(storage)
-    writeImageFilter(storage, initialImageFilter)
     browserModal = ctx.ui.showModal({
       title: 'Image Browser',
       width: 1120,
@@ -464,13 +370,15 @@ export function setup(ctx) {
     browserState = {
       root: browserModal.root,
       items: [],
-      offset: initialOffset,
+      offset: 0,
       total: 0,
       selected: new Set(),
-      protectedImages: readReferencedImageCache(storage),
+      protectedImages: new Map(),
       query: '',
-      imageFilter: initialImageFilter,
-      loading: false,
+      imageFilter: 'all',
+      loading: true,
+      storageReady: false,
+      storageError: '',
       deleting: false,
       permissionGranted,
       status: 'Loading images…',
@@ -482,7 +390,21 @@ export function setup(ctx) {
       browserState = null
     })
     renderBrowser()
-    void loadPage(initialOffset)
+    const state = browserState
+    try {
+      const { result } = await rpc('image_browser_state_get')
+      if (browserState !== state) return
+      const offset = (result.lastPage - 1) * PAGE_SIZE
+      state.offset = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0
+      state.imageFilter = result.imageFilter
+      state.protectedImages = new Map(Object.entries(result.references))
+      state.storageReady = true
+    } catch (error) {
+      if (browserState !== state) return
+      state.storageError = `Could not load saved preferences; changes will not be saved. Reopen Image Browser to retry. ${error instanceof Error ? error.message : String(error)}`
+    }
+    state.loading = false
+    void loadPage(state.offset)
   }
 
   function openPreview(image, previewImages) {
@@ -590,6 +512,7 @@ export function setup(ctx) {
 
   async function deleteSelected() {
     if (!browserState || browserState.deleting || browserState.selected.size === 0) return
+    const state = browserState
     const ids = [...browserState.selected]
     const knownProtectedCount = ids.filter((id) => browserState.protectedImages.has(id)).length
     const uncheckedCount = ids.length - knownProtectedCount
@@ -608,7 +531,7 @@ export function setup(ctx) {
       variant: knownProtectedCount > 0 ? 'warning' : 'danger',
       confirmLabel: uncheckedCount === 0 ? 'Check again' : 'Delete unused',
     })
-    if (!confirmed || !browserState) return
+    if (!confirmed || browserState !== state) return
 
     browserState.deleting = true
     browserState.status = `Checking ${ids.length} selected image${ids.length === 1 ? '' : 's'}…`
@@ -625,17 +548,17 @@ export function setup(ctx) {
       }
     })
 
-    if (!browserState) return
     const summary = summarizeDeleteResults(results)
     const deletedIds = new Set(results.filter((result) => result.status === 'deleted').map((result) => result.id))
     const protectedIds = results.filter((result) => result.status === 'protected').map((result) => result.id)
+    await saveState(state, { protectedIds, deletedIds: [...deletedIds] })
+    if (browserState !== state) return
     browserState.items = browserState.items.filter((image) => !deletedIds.has(image.id))
     browserState.total = Math.max(0, browserState.total - summary.deleted)
     browserState.selected.clear()
     for (const id of deletedIds) browserState.protectedImages.delete(id)
     const confirmedAt = Date.now()
     for (const id of protectedIds) browserState.protectedImages.set(id, confirmedAt)
-    writeReferencedImageCache(pageStorage(), browserState.protectedImages)
     browserState.deleting = false
     browserState.status = [
       `${summary.deleted} deleted`,
@@ -755,7 +678,6 @@ export function setup(ctx) {
       radio.addEventListener('change', () => {
         if (!radio.checked || state.imageFilter === option.value) return
         state.imageFilter = option.value
-        writeImageFilter(pageStorage(), state.imageFilter)
         void loadPage(0)
       })
       optionLabel.append(radio, createElement('span', 'lib-filter-segment', option.label))
@@ -769,8 +691,8 @@ export function setup(ctx) {
 
     const status = createElement('div', 'lib-status', state.permissionGranted === false
       ? 'Grant the Images permission in the Extensions panel, then refresh.'
-      : state.status)
-    status.dataset.tone = state.permissionGranted === false ? 'error' : state.tone
+      : [state.status, state.storageError].filter(Boolean).join(' '))
+    status.dataset.tone = state.permissionGranted === false || state.storageError ? 'error' : state.tone
 
     const grid = createElement('div', 'lib-grid')
     if (visibleImages.length === 0) {

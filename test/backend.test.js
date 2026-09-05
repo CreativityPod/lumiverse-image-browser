@@ -3,13 +3,15 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
 
-async function createHarness(permission = true, listImplementation = null) {
+async function createHarness(permission = true, listImplementation = null, stored = new Map()) {
   const source = await readFile(new URL('../dist/backend.js', import.meta.url), 'utf8')
   let frontendHandler
   const sent = []
   const listCalls = []
   const getCalls = []
   const eventHandlers = new Map()
+  const storageCalls = []
+  const storageErrors = { read: false, write: false }
   const spindle = {
     permissions: {
       has: (name) => name === 'images' && permission,
@@ -29,12 +31,113 @@ async function createHarness(permission = true, listImplementation = null) {
         return { id, url: `/api/v1/images/${id}` }
       },
     },
+    userStorage: {
+      exists: async (path, userId) => {
+        storageCalls.push({ method: 'exists', path, userId })
+        if (storageErrors.read) throw new Error('Storage unavailable')
+        return stored.has(`${userId}/${path}`)
+      },
+      getJson: async (path, { userId }) => {
+        storageCalls.push({ method: 'getJson', path, userId })
+        return JSON.parse(stored.get(`${userId}/${path}`))
+      },
+      setJson: async (path, value, { userId }) => {
+        storageCalls.push({ method: 'setJson', path, userId })
+        if (storageErrors.write) throw new Error('Storage write failed')
+        stored.set(`${userId}/${path}`, JSON.stringify(value))
+      },
+    },
     on: (eventName, handler) => eventHandlers.set(eventName, handler),
     log: { info: () => undefined },
   }
   vm.runInNewContext(source, { spindle, Error, Number, Math, String })
-  return { frontendHandler, sent, listCalls, getCalls, eventHandlers }
+  return { frontendHandler, sent, listCalls, getCalls, eventHandlers, stored, storageCalls, storageErrors }
 }
+
+test('state persists across backend restarts and is isolated by authenticated account', async () => {
+  const harness = await createHarness()
+  await harness.frontendHandler({ type: 'image_browser_state_patch', userId: 'bob', patch: {
+    lastPage: 4, imageFilter: 'generated', protectedIds: ['alice-image'],
+  } }, 'alice')
+  assert.ok(harness.storageCalls.every((call) => call.userId === 'alice'))
+  const restarted = await createHarness(true, null, harness.stored)
+  await restarted.frontendHandler({ type: 'image_browser_state_get' }, 'bob')
+  assert.deepEqual(JSON.parse(JSON.stringify(restarted.sent[0].payload.result)), {
+    version: 1, lastPage: 1, imageFilter: 'all', references: {},
+  })
+  await restarted.frontendHandler({ type: 'image_browser_state_get' }, 'alice')
+  const state = restarted.sent[1].payload.result
+  assert.equal(state.lastPage, 4)
+  assert.equal(state.imageFilter, 'generated')
+  assert.equal(typeof state.references['alice-image'], 'number')
+  assert.equal(restarted.sent[1].userId, 'alice')
+})
+
+test('concurrent incremental updates preserve other tabs preferences and references', async () => {
+  const harness = await createHarness()
+  await Promise.all([
+    { lastPage: 3 },
+    { imageFilter: 'non-generated' },
+    { protectedIds: ['image-a'] },
+    { protectedIds: ['image-b'] },
+    { deletedIds: ['image-a'] },
+  ].map((patch) => harness.frontendHandler({ type: 'image_browser_state_patch', patch }, 'alice')))
+  const state = JSON.parse(harness.stored.get('alice/state.json'))
+  assert.equal(state.lastPage, 3)
+  assert.equal(state.imageFilter, 'non-generated')
+  assert.deepEqual(Object.keys(state.references), ['image-b'])
+})
+
+test('reference cache expires and stays bounded while invalid preferences use defaults', async () => {
+  const now = Date.now()
+  const references = Object.fromEntries(Array.from({ length: 2001 }, (_, i) => [`image-${i}`, now - i]))
+  references.expired = now - 91 * 24 * 60 * 60 * 1000
+  references.future = now + 100_000
+  references.invalid = 'yesterday'
+  const stored = new Map([['alice/state.json', JSON.stringify({
+    version: 1, lastPage: -4, imageFilter: 'bad', references,
+  })]])
+  const harness = await createHarness(true, null, stored)
+  await harness.frontendHandler({ type: 'image_browser_state_get' }, 'alice')
+  const state = harness.sent[0].payload.result
+  assert.equal(state.lastPage, 1)
+  assert.equal(state.imageFilter, 'all')
+  assert.equal(Object.keys(state.references).length, 2000)
+  for (const key of ['expired', 'future', 'invalid', 'image-2000']) assert.equal(state.references[key], undefined)
+})
+
+test('failed reads, corrupt JSON, invalid patches and failed writes do not overwrite saved state', async () => {
+  const stored = new Map([['alice/state.json', '{broken']])
+  const harness = await createHarness(true, null, stored)
+  await harness.frontendHandler({ type: 'image_browser_state_patch', patch: { lastPage: 2 } }, 'alice')
+  assert.equal(harness.sent.at(-1).payload.ok, false)
+  assert.equal(stored.get('alice/state.json'), '{broken')
+  stored.delete('alice/state.json')
+  harness.storageErrors.read = true
+  await harness.frontendHandler({ type: 'image_browser_state_get' }, 'alice')
+  assert.equal(harness.sent.at(-1).payload.ok, false)
+  harness.storageErrors.read = false
+  harness.storageErrors.write = true
+  await harness.frontendHandler({ type: 'image_browser_state_patch', patch: { lastPage: 2 } }, 'alice')
+  assert.equal(harness.sent.at(-1).payload.ok, false)
+  harness.storageErrors.write = false
+  for (const patch of [{ lastPage: 0 }, { imageFilter: 'bad' }, { protectedIds: [null] }]) {
+    await harness.frontendHandler({ type: 'image_browser_state_patch', patch }, 'alice')
+    assert.equal(harness.sent.at(-1).payload.ok, false)
+  }
+  assert.equal(stored.size, 0)
+  await harness.frontendHandler({ type: 'image_browser_state_patch', patch: { lastPage: 2 } }, 'alice')
+  assert.equal(harness.sent.at(-1).payload.ok, true)
+  assert.equal(JSON.parse(stored.get('alice/state.json')).lastPage, 2)
+})
+
+test('state access requires a user identity and the Images permission', async () => {
+  const harness = await createHarness(false)
+  await harness.frontendHandler({ type: 'image_browser_state_get' }, 'alice')
+  assert.equal(harness.sent.at(-1).payload.code, 'IMAGES_PERMISSION_REQUIRED')
+  await harness.frontendHandler({ type: 'image_browser_state_patch', patch: { lastPage: 2 } }, undefined)
+  assert.equal(harness.storageCalls.length, 0)
+})
 
 test('lists small thumbnails for the requesting user', async () => {
   const harness = await createHarness(true)

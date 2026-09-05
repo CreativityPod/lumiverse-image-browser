@@ -1,20 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
-  GENERATED_ONLY_STORAGE_KEY,
-  IMAGE_FILTER_STORAGE_KEY,
-  LAST_PAGE_STORAGE_KEY,
-  REFERENCED_IMAGES_STORAGE_KEY,
-  REFERENCED_IMAGE_CACHE_TTL_MS,
-  readImageFilter,
-  readLastPageNumber,
-  readReferencedImageCache,
-  setup,
-  writeImageFilter,
-  writeLastPageNumber,
-  writeReferencedImageCache,
-} from '../src/frontend.js'
+import { setup } from '../src/frontend.js'
 
 class FakeElement {
   constructor(tagName = 'div') {
@@ -25,6 +12,7 @@ class FakeElement {
     this.style = {}
     this.dataset = {}
     this.classList = { add() {} }
+    this.listeners = new Map()
   }
 
   append(...children) {
@@ -40,7 +28,8 @@ class FakeElement {
     this.children = [...children]
   }
 
-  addEventListener() {}
+  addEventListener(name, handler) { this.listeners.set(name, handler) }
+  dispatch(name) { return this.listeners.get(name)?.({}) }
   setAttribute() {}
   querySelector() { return null }
 }
@@ -114,72 +103,159 @@ test('frontend setup survives without secure-context UUIDs or an input bar actio
   }
 })
 
-test('last page preference persists safely in local storage', () => {
-  const values = new Map()
-  const storage = {
-    getItem(key) { return values.get(key) ?? null },
-    setItem(key, value) { values.set(key, value) },
+function findElement(root, predicate) {
+  if (predicate(root)) return root
+  for (const child of root.children || []) {
+    const match = findElement(child, predicate)
+    if (match) return match
   }
+}
 
-  assert.equal(readLastPageNumber(storage), 1)
-  assert.equal(writeLastPageNumber(storage, 4), true)
-  assert.equal(values.get(LAST_PAGE_STORAGE_KEY), '4')
-  assert.equal(readLastPageNumber(storage), 4)
+const flush = () => new Promise((resolve) => setImmediate(resolve))
 
-  values.set(LAST_PAGE_STORAGE_KEY, '0')
-  assert.equal(readLastPageNumber(storage), 1)
-  values.set(LAST_PAGE_STORAGE_KEY, '2.5')
-  assert.equal(readLastPageNumber(storage), 1)
-  values.set(LAST_PAGE_STORAGE_KEY, 'not-a-page')
-  assert.equal(readLastPageNumber(storage), 1)
-  assert.equal(writeLastPageNumber(storage, 0), false)
-})
-
-test('last page preference falls back when local storage is unavailable', () => {
-  const unavailableStorage = {
-    getItem() { throw new Error('Storage is blocked') },
-    setItem() { throw new Error('Storage is blocked') },
-  }
-
-  assert.equal(readLastPageNumber(unavailableStorage), 1)
-  assert.equal(writeLastPageNumber(unavailableStorage, 3), false)
-})
-
-test('image filter preference persists and migrates generated-only local storage', () => {
-  const values = new Map()
-  const storage = {
-    getItem(key) { return values.get(key) ?? null },
-    setItem(key, value) { values.set(key, value) },
-    removeItem(key) { values.delete(key) },
-  }
-
-  assert.equal(readImageFilter(storage), 'all')
-  values.set(GENERATED_ONLY_STORAGE_KEY, 'true')
-  assert.equal(readImageFilter(storage), 'generated')
-
-  assert.equal(writeImageFilter(storage, 'non-generated'), true)
-  assert.equal(values.get(IMAGE_FILTER_STORAGE_KEY), 'non-generated')
-  assert.equal(values.has(GENERATED_ONLY_STORAGE_KEY), false)
-  assert.equal(readImageFilter(storage), 'non-generated')
-  assert.equal(writeImageFilter(storage, 'invalid'), false)
-})
-
-test('referenced image cache persists UUID records and expires stale observations', () => {
-  const now = Date.UTC(2026, 8, 1)
-  const values = new Map()
-  const storage = {
-    getItem(key) { return values.get(key) ?? null },
-    setItem(key, value) { values.set(key, value) },
-  }
-  const records = new Map([
-    ['image-current', now],
-    ['image-expired', now - REFERENCED_IMAGE_CACHE_TTL_MS - 1],
+function browserHarness(t) {
+  const originals = Object.fromEntries(['window', 'document', 'fetch'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
+  const drawer = new FakeElement()
+  const requests = []
+  const accounts = new Map([
+    ['alice', { lastPage: 3, imageFilter: 'generated', references: { 'image-1': Date.now() } }],
+    ['bob', { lastPage: 1, imageFilter: 'all', references: {} }],
   ])
+  const harness = { account: 'alice', loadError: false, saveError: false, deleted: false, modal: null, requests, accounts }
+  Object.defineProperties(globalThis, {
+    window: { configurable: true, value: {
+      setTimeout, clearTimeout, innerHeight: 800,
+      get localStorage() { assert.fail('Browser storage must not be accessed') },
+    } },
+    document: { configurable: true, value: {
+      createElement: (tag) => new FakeElement(tag), createTextNode: (text) => ({ textContent: text }),
+    } },
+    fetch: { configurable: true, value: async (url) => {
+      assert.match(url, /\?unused=true$/)
+      return { ok: true, json: async () => ({ deleted: harness.deleted }) }
+    } },
+  })
+  let receive
+  const teardown = setup({
+    deferReady() {}, ready() {}, dom: { addStyle: () => () => {} },
+    onBackendMessage(handler) { receive = handler; return () => {} },
+    sendToBackend(payload) {
+      requests.push(payload)
+      const state = accounts.get(harness.account)
+      let response = { ok: true }
+      if (payload.type === 'image_browser_permission') response.granted = true
+      if (payload.type === 'image_browser_state_get') {
+        response = harness.loadError ? { ok: false, error: 'Storage unavailable' } : { ok: true, result: structuredClone(state) }
+      }
+      if (payload.type === 'image_browser_list') response.result = {
+        data: [{ id: 'image-1', original_filename: 'image-gen-test.png', url: '/image.png' }], total: 400,
+      }
+      if (payload.type === 'image_browser_state_patch') {
+        if (harness.saveError) response = { ok: false, error: 'Storage write failed' }
+        else {
+          const { patch } = payload
+          if ('lastPage' in patch) state.lastPage = patch.lastPage
+          if ('imageFilter' in patch) state.imageFilter = patch.imageFilter
+          for (const id of patch.protectedIds || []) state.references[id] = Date.now()
+          for (const id of patch.deletedIds || []) delete state.references[id]
+        }
+      }
+      receive({ requestId: payload.requestId, ...response })
+    },
+    ui: {
+      registerDrawerTab: () => ({ root: drawer, destroy() {} }),
+      showConfirm: async () => ({ confirmed: true }),
+      showModal() {
+        let dismiss
+        harness.modal = { root: new FakeElement(), onDismiss(handler) { dismiss = handler }, dismiss() { dismiss?.() } }
+        return harness.modal
+      },
+    },
+  })
+  harness.find = (predicate) => findElement(harness.modal.root, predicate)
+  harness.open = async () => {
+    await findElement(drawer, (el) => el.textContent === 'Open Image Browser').dispatch('click')
+    await flush()
+  }
+  harness.selectAndDelete = async () => {
+    const checkbox = harness.find((el) => el.className === 'lib-check').children[0]
+    checkbox.checked = true
+    checkbox.dispatch('change')
+    harness.find((el) => el.textContent.startsWith('Delete unused (')).dispatch('click')
+    await flush()
+  }
+  t.after(() => {
+    teardown()
+    for (const [key, descriptor] of Object.entries(originals)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else delete globalThis[key]
+    }
+  })
+  return harness
+}
 
-  assert.equal(writeReferencedImageCache(storage, records), true)
-  assert.ok(values.has(REFERENCED_IMAGES_STORAGE_KEY))
-  assert.deepEqual([...readReferencedImageCache(storage, now)], [['image-current', now]])
+test('opening restores account state before listing, saves navigation, and reloads on account switch', async (t) => {
+  const h = browserHarness(t)
+  await h.open()
+  assert.equal(h.requests.find((r) => r.type === 'image_browser_list').offset, 120)
+  assert.ok(h.find((el) => el.className === 'lib-reference-badge'))
+  h.find((el) => el.textContent === 'Next').dispatch('click')
+  await flush()
+  assert.equal(h.accounts.get('alice').lastPage, 4)
+  const filter = h.find((el) => el.type === 'radio' && el.value === 'all')
+  filter.checked = true
+  filter.dispatch('change')
+  await flush()
+  assert.equal(h.accounts.get('alice').lastPage, 1)
+  assert.equal(h.accounts.get('alice').imageFilter, 'all')
+  h.modal.dismiss()
+  h.account = 'bob'
+  await h.open()
+  assert.equal(h.find((el) => el.className === 'lib-reference-badge'), undefined)
+  assert.equal(h.requests.filter((r) => r.type === 'image_browser_list').at(-1).offset, 0)
+  h.modal.dismiss()
+  h.account = 'alice'
+  await h.open()
+  assert.ok(h.find((el) => el.className === 'lib-reference-badge'))
+})
 
-  values.set(REFERENCED_IMAGES_STORAGE_KEY, '{not-json')
-  assert.equal(readReferencedImageCache(storage, now).size, 0)
+test('safe deletion saves reference deltas and removes deleted IDs from the account cache', async (t) => {
+  const h = browserHarness(t)
+  h.account = 'bob'
+  await h.open()
+  await h.selectAndDelete()
+  assert.ok(h.accounts.get('bob').references['image-1'])
+  assert.ok(h.find((el) => el.className === 'lib-reference-badge'))
+  h.deleted = true
+  await h.selectAndDelete()
+  assert.equal(h.accounts.get('bob').references['image-1'], undefined)
+  assert.equal(h.find((el) => el.className === 'lib-card'), undefined)
+  assert.deepEqual(h.requests.filter((r) => r.type === 'image_browser_state_patch').at(-1).patch, {
+    protectedIds: [], deletedIds: ['image-1'],
+  })
+})
+
+test('failed preference load allows browsing without overwriting saved state and reopening retries', async (t) => {
+  const h = browserHarness(t)
+  h.loadError = true
+  await h.open()
+  assert.ok(h.requests.some((r) => r.type === 'image_browser_list'))
+  assert.equal(h.requests.some((r) => r.type === 'image_browser_state_patch'), false)
+  assert.match(h.find((el) => el.className === 'lib-status').textContent, /Could not load saved preferences/)
+  h.modal.dismiss()
+  h.loadError = false
+  await h.open()
+  assert.equal(h.requests.filter((r) => r.type === 'image_browser_list').at(-1).offset, 120)
+})
+
+test('failed preference saves show a warning while images remain usable', async (t) => {
+  const h = browserHarness(t)
+  h.saveError = true
+  await h.open()
+  assert.ok(h.find((el) => el.className === 'lib-card'))
+  assert.match(h.find((el) => el.className === 'lib-status').textContent, /Could not save Image Browser preferences/)
+  h.saveError = false
+  h.find((el) => el.textContent === 'Refresh').dispatch('click')
+  await flush()
+  assert.doesNotMatch(h.find((el) => el.className === 'lib-status').textContent, /Could not save/)
 })
