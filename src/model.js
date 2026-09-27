@@ -59,8 +59,17 @@ export function filterImages(images, query, imageFilter = 'all') {
   })
 }
 
+export function isVideoMedia(image) {
+  return String(image?.mime_type || '').trim().toLowerCase().startsWith('video/')
+}
+
+export function hasDimensions(image) {
+  return Number.isFinite(image?.width) && image.width > 0
+    && Number.isFinite(image?.height) && image.height > 0
+}
+
 export function formatDimensions(image) {
-  return Number.isFinite(image?.width) && Number.isFinite(image?.height)
+  return hasDimensions(image)
     ? `${image.width} × ${image.height}`
     : 'Dimensions unavailable'
 }

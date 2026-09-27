@@ -13,6 +13,8 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 - Remembers the last successfully loaded page for the signed-in Lumiverse account
 - Remembers the selected image-type view and recently confirmed reference badges
 - Full-resolution, contained image previews; stored videos use native controls
+- Videos have a **▶ Video** badge on their thumbnails, including when a still poster is shown
+- Missing dimensions are read from the original media when its preview loads and appear on its card for the current browser session
 - Multi-selection across loaded pages
 - Safe bulk cleanup through Lumiverse's existing `unused=true` deletion path
 - Referenced images remain stored and are marked as protected after a cleanup attempt
