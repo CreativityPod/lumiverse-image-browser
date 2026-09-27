@@ -12,10 +12,11 @@ async function createHarness(permission = true, listImplementation = null, store
   const eventHandlers = new Map()
   const storageCalls = []
   const storageErrors = { read: false, write: false }
+  let permissionHandler
   const spindle = {
     permissions: {
       has: (name) => name === 'images' && permission,
-      onChanged: () => undefined,
+      onChanged: (handler) => { permissionHandler = handler },
     },
     onFrontendMessage: (handler) => { frontendHandler = handler },
     sendToFrontend: (payload, userId) => sent.push({ payload, userId }),
@@ -51,7 +52,7 @@ async function createHarness(permission = true, listImplementation = null, store
     log: { info: () => undefined },
   }
   vm.runInNewContext(source, { spindle, Error, Number, Math, String })
-  return { frontendHandler, sent, listCalls, getCalls, eventHandlers, stored, storageCalls, storageErrors }
+  return { frontendHandler, sent, listCalls, getCalls, eventHandlers, permissionHandler, stored, storageCalls, storageErrors }
 }
 
 test('state persists across backend restarts and is isolated by authenticated account', async () => {
@@ -63,7 +64,7 @@ test('state persists across backend restarts and is isolated by authenticated ac
   const restarted = await createHarness(true, null, harness.stored)
   await restarted.frontendHandler({ type: 'image_browser_state_get' }, 'bob')
   assert.deepEqual(JSON.parse(JSON.stringify(restarted.sent[0].payload.result)), {
-    version: 1, lastPage: 1, imageFilter: 'all', references: {},
+    version: 1, lastPage: 1, imageFilter: 'all', showWidget: true, references: {},
   })
   await restarted.frontendHandler({ type: 'image_browser_state_get' }, 'alice')
   const state = restarted.sent[1].payload.result
@@ -121,7 +122,7 @@ test('failed reads, corrupt JSON, invalid patches and failed writes do not overw
   await harness.frontendHandler({ type: 'image_browser_state_patch', patch: { lastPage: 2 } }, 'alice')
   assert.equal(harness.sent.at(-1).payload.ok, false)
   harness.storageErrors.write = false
-  for (const patch of [{ lastPage: 0 }, { imageFilter: 'bad' }, { protectedIds: [null] }]) {
+  for (const patch of [{ lastPage: 0 }, { imageFilter: 'bad' }, { protectedIds: [null] }, { showWidget: 'false' }]) {
     await harness.frontendHandler({ type: 'image_browser_state_patch', patch }, 'alice')
     assert.equal(harness.sent.at(-1).payload.ok, false)
   }
@@ -137,6 +138,27 @@ test('state access requires a user identity and the Images permission', async ()
   assert.equal(harness.sent.at(-1).payload.code, 'IMAGES_PERMISSION_REQUIRED')
   await harness.frontendHandler({ type: 'image_browser_state_patch', patch: { lastPage: 2 } }, undefined)
   assert.equal(harness.storageCalls.length, 0)
+})
+
+test('widget visibility persists per account and survives unrelated state updates', async () => {
+  const h = await createHarness()
+  await h.frontendHandler({ type: 'image_browser_state_patch', patch: { showWidget: false } }, 'alice')
+  await h.frontendHandler({ type: 'image_browser_state_patch', patch: { lastPage: 2 } }, 'alice')
+  const restarted = await createHarness(true, null, h.stored)
+  await restarted.frontendHandler({ type: 'image_browser_state_get' }, 'alice')
+  assert.equal(restarted.sent.at(-1).payload.result.showWidget, false)
+  await restarted.frontendHandler({ type: 'image_browser_state_get' }, 'bob')
+  assert.equal(restarted.sent.at(-1).payload.result.showWidget, true)
+})
+
+test('UI panels permission changes reach the frontend without affecting Images access', async () => {
+  const h = await createHarness()
+  h.permissionHandler({ permission: 'ui_panels', granted: false })
+  assert.deepEqual(JSON.parse(JSON.stringify(h.sent.at(-1).payload)), {
+    type: 'image_browser_permission_changed', permission: 'ui_panels', granted: false,
+  })
+  await h.frontendHandler({ type: 'image_browser_list' }, 'alice')
+  assert.equal(h.sent.at(-1).payload.ok, true)
 })
 
 test('lists small thumbnails for the requesting user', async () => {

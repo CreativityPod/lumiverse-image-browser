@@ -1,5 +1,5 @@
 {
-  "version": "0.1.5",
+  "version": "0.1.6",
   "name": "Image Browser",
   "identifier": "image_browser",
   "author": "CreativityPod",
@@ -7,7 +7,8 @@
   "homepage": "https://github.com/CreativityPod/lumiverse-image-browser",
   "description": "Browse, preview, select, and safely remove unreferenced Lumiverse image assets.",
   "permissions": [
-    "images"
+    "images",
+    "ui_panels"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",

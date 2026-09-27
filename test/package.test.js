@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-test('manifest requests only the images permission and ships both entries', async () => {
+test('manifest requests images and floating UI permissions and ships both entries', async () => {
   const manifest = JSON.parse(await readFile(new URL('../spindle.json', import.meta.url), 'utf8'))
-  assert.deepEqual(manifest.permissions, ['images'])
+  assert.deepEqual(manifest.permissions, ['images', 'ui_panels'])
   assert.equal(manifest.entry_backend, 'dist/backend.js')
   assert.equal(manifest.entry_frontend, 'dist/frontend.js')
   assert.equal(manifest.author, 'CreativityPod')

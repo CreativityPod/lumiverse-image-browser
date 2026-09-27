@@ -16,6 +16,26 @@ const STYLES = `
   .lib-launcher-card { padding:16px; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); }
   .lib-launcher h3 { margin:0 0 6px; font-size:16px; }
   .lib-launcher p { margin:0; color:var(--lumiverse-text-muted); font-size:13px; line-height:1.5; }
+  .lib-widget-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+  .lib-widget-copy { display:grid; gap:5px; }
+  .lib-widget-label { font-size:13px; font-weight:650; }
+  .lib-widget-hint { color:var(--lumiverse-text-muted); font-size:12px; line-height:1.5; }
+  .lib-widget-hint[data-tone="warning"] { color:var(--lumiverse-warning, #c89b62); }
+  .lib-widget-switch { position:relative; display:inline-flex; flex-shrink:0; cursor:pointer; }
+  .lib-widget-switch input { position:absolute; width:1px; height:1px; opacity:0; }
+  .lib-widget-track { display:block; width:38px; height:22px; border-radius:11px; background:var(--lumiverse-border); transition:background .16s ease; }
+  .lib-widget-track::after { content:''; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:var(--lumiverse-text); transition:transform .16s ease; }
+  .lib-widget-switch input:checked + .lib-widget-track { background:var(--lumiverse-primary); }
+  .lib-widget-switch input:checked + .lib-widget-track::after { transform:translateX(16px); }
+  .lib-widget-switch input:focus-visible + .lib-widget-track { outline:2px solid var(--lumiverse-primary); outline-offset:3px; }
+  .lib-widget-switch input:disabled + .lib-widget-track { cursor:not-allowed; opacity:.5; }
+  .lib-floating-widget { display:grid; place-items:center; width:100%; height:100%; padding:0; border:0; background:transparent; color:var(--lumiverse-primary); cursor:pointer; transition:transform .18s ease; }
+  .lib-floating-widget:hover { transform:scale(1.08); }
+  .lib-floating-widget:focus-visible { outline:2px solid var(--lumiverse-primary); outline-offset:2px; }
+  .lib-floating-widget svg { display:block; width:25px; height:25px; }
+  @media (prefers-reduced-motion:reduce) {
+    .lib-floating-widget, .lib-widget-track, .lib-widget-track::after { transition:none; }
+  }
   .lib-button { appearance:none; border:1px solid color-mix(in srgb, var(--lumiverse-primary) 48%, var(--lumiverse-border)); border-radius:10px; padding:9px 13px; background:color-mix(in srgb, var(--lumiverse-primary) 14%, var(--lumiverse-fill)); color:var(--lumiverse-text); font:inherit; font-weight:650; cursor:pointer; }
   .lib-button:hover { background:color-mix(in srgb, var(--lumiverse-primary) 22%, var(--lumiverse-fill)); }
   .lib-button:disabled { cursor:not-allowed; opacity:.5; }
@@ -89,6 +109,64 @@ function createElement(tag, className, text) {
   return element
 }
 
+// Track window-level movement because the host owns the widget's pointer capture.
+export function bindDragSafeClick(target, pointerTarget, action) {
+  let start = null
+  let dragged = false
+  let timer = null
+  const reset = () => {
+    start = null
+    dragged = false
+    if (timer !== null) window.clearTimeout(timer)
+    timer = null
+  }
+  const scheduleReset = () => {
+    if (timer !== null) window.clearTimeout(timer)
+    timer = window.setTimeout(reset, 0)
+  }
+  const onDown = (event) => {
+    if (event.isPrimary === false) return
+    reset()
+    start = { id: event.pointerId, x: event.clientX, y: event.clientY }
+  }
+  const onMove = (event) => {
+    if (!start || event.pointerId !== start.id) return
+    if ((event.clientX - start.x) ** 2 + (event.clientY - start.y) ** 2 >= 36) dragged = true
+  }
+  const onUp = (event) => {
+    if (start && event.pointerId === start.id) scheduleReset()
+  }
+  const onCancel = (event) => {
+    if (start && event.pointerId === start.id) reset()
+  }
+  const onClick = (event) => {
+    if (dragged) {
+      event.preventDefault()
+      event.stopPropagation()
+      reset()
+      return
+    }
+    reset()
+    action(event)
+  }
+  target.addEventListener('pointerdown', onDown)
+  target.addEventListener('click', onClick)
+  pointerTarget.addEventListener('pointermove', onMove, true)
+  pointerTarget.addEventListener('pointerup', onUp, true)
+  pointerTarget.addEventListener('pointercancel', onCancel, true)
+  return {
+    markDragged() { dragged = true; scheduleReset() },
+    destroy() {
+      reset()
+      target.removeEventListener('pointerdown', onDown)
+      target.removeEventListener('click', onClick)
+      pointerTarget.removeEventListener('pointermove', onMove, true)
+      pointerTarget.removeEventListener('pointerup', onUp, true)
+      pointerTarget.removeEventListener('pointercancel', onCancel, true)
+    },
+  }
+}
+
 function relativeDate(unixSeconds) {
   if (!Number.isFinite(Number(unixSeconds))) return 'Unknown date'
   return new Date(Number(unixSeconds) * 1000).toLocaleString()
@@ -114,6 +192,116 @@ export function setup(ctx) {
   let browserState = null
   let permissionGranted = null
   let disposed = false
+  let showWidget = true
+  let widgetPreferenceReady = false
+  let widgetPreferenceRevision = 0
+  let pendingWidgetRevision = null
+  let widgetSaveQueue = Promise.resolve()
+  let widgetPreferenceError = ''
+  let widgetUnavailable = ''
+  let uiPanelsGranted = null
+  let floatingWidget = null
+  let widgetInteraction = null
+  let unsubscribeDrag = null
+  let launcher = null
+  let widgetSwitch = null
+
+  function destroyWidget() {
+    widgetInteraction?.destroy()
+    widgetInteraction = null
+    unsubscribeDrag?.()
+    unsubscribeDrag = null
+    try { floatingWidget?.destroy() } catch { /* the host may already have retired it */ }
+    floatingWidget = null
+  }
+
+  function syncWidget() {
+    if (disposed || !widgetPreferenceReady || !showWidget || permissionGranted !== true) {
+      destroyWidget()
+      widgetUnavailable = ''
+      return
+    }
+    if (uiPanelsGranted === false || typeof ctx.ui.createFloatWidget !== 'function') {
+      destroyWidget()
+      widgetUnavailable = uiPanelsGranted === false
+        ? 'Grant the UI panels permission in the Extensions panel to show the widget.'
+        : 'Floating widgets are unavailable in this Lumiverse version.'
+      return
+    }
+    if (floatingWidget) return
+    try {
+      floatingWidget = ctx.ui.createFloatWidget({
+        width: 48,
+        height: 48,
+        initialPosition: { x: 12, y: Math.max(72, Math.round((window.innerHeight - 48) * 0.55)) },
+        snapToEdge: true,
+        tooltip: 'Open Image Browser',
+        chromeless: true,
+        persistGeometry: 'image-browser-launcher',
+      })
+      const button = createElement('button', 'lib-floating-widget')
+      button.type = 'button'
+      button.innerHTML = ICON_SVG
+      button.title = 'Open Image Browser'
+      button.setAttribute('aria-label', 'Open Image Browser')
+      widgetInteraction = bindDragSafeClick(button, window, openBrowser)
+      if (typeof floatingWidget.onDragEnd === 'function') {
+        unsubscribeDrag = floatingWidget.onDragEnd(() => widgetInteraction?.markDragged())
+      }
+      floatingWidget.root.replaceChildren(button)
+      widgetUnavailable = ''
+    } catch {
+      destroyWidget()
+      widgetUnavailable = 'Floating widget unavailable. Grant the UI panels permission and reload the extension.'
+    }
+  }
+
+  function applyWidgetPreference(result, revision) {
+    if (disposed || revision !== widgetPreferenceRevision || pendingWidgetRevision !== null) return
+    showWidget = result?.showWidget !== false
+    widgetPreferenceReady = true
+    widgetPreferenceError = ''
+    syncWidget()
+    renderLauncher()
+  }
+
+  async function loadWidgetPreference() {
+    const revision = ++widgetPreferenceRevision
+    try {
+      const { result } = await rpc('image_browser_state_get')
+      applyWidgetPreference(result, revision)
+    } catch (error) {
+      if (disposed || revision !== widgetPreferenceRevision) return
+      widgetPreferenceError = `Could not load the widget preference: ${error instanceof Error ? error.message : String(error)}`
+      // Let the user retry saving explicitly without overwriting state on a failed read.
+      widgetPreferenceReady = true
+      renderLauncher()
+    }
+  }
+
+  function setWidgetVisibility(visible) {
+    if (disposed || !widgetPreferenceReady || permissionGranted !== true) return
+    showWidget = visible === true
+    const revision = ++widgetPreferenceRevision
+    pendingWidgetRevision = revision
+    const patch = { showWidget }
+    widgetPreferenceError = ''
+    syncWidget()
+    renderLauncher()
+    // Preserve click order even when users toggle again before the first save completes.
+    widgetSaveQueue = widgetSaveQueue.then(async () => {
+      if (disposed) return
+      try {
+        await rpc('image_browser_state_patch', { patch })
+      } catch (error) {
+        if (!disposed && revision === widgetPreferenceRevision) {
+          widgetPreferenceError = `Could not save the widget preference: ${error instanceof Error ? error.message : String(error)}`
+        }
+      }
+      if (pendingWidgetRevision === revision) pendingWidgetRevision = null
+      if (!disposed && revision === widgetPreferenceRevision) renderLauncher()
+    })
+  }
 
   function rpc(type, payload = {}) {
     requestSequence += 1
@@ -142,7 +330,20 @@ export function setup(ctx) {
   const unsubscribeBackend = ctx.onBackendMessage((payload) => {
     if (!payload || typeof payload !== 'object') return
     if (payload.type === 'image_browser_permission_changed') {
+      if (disposed) return
+      if (payload.permission === 'ui_panels') {
+        uiPanelsGranted = Boolean(payload.granted)
+        syncWidget()
+        renderLauncher()
+        return
+      }
       permissionGranted = Boolean(payload.granted)
+      widgetPreferenceRevision += 1
+      if (permissionGranted) void loadWidgetPreference()
+      else {
+        widgetPreferenceReady = false
+        syncWidget()
+      }
       renderLauncher()
       if (browserState) {
         browserState.permissionGranted = permissionGranted
@@ -171,23 +372,53 @@ export function setup(ctx) {
   drawer.root.classList.add('lib-launcher')
 
   function renderLauncher() {
-    drawer.root.replaceChildren()
-    const card = createElement('div', 'lib-launcher-card')
-    card.append(
-      createElement('h3', '', 'Stored image assets'),
-      createElement(
-        'p',
-        '',
-        permissionGranted === false
-          ? 'Grant the Images permission in the Extensions panel to browse your assets.'
-          : 'Open a wide, paginated thumbnail browser. Safe deletion keeps every referenced image protected.',
-      ),
-    )
-    const openButton = createElement('button', 'lib-button', 'Open Image Browser')
-    openButton.type = 'button'
-    openButton.disabled = permissionGranted === false
-    openButton.addEventListener('click', openBrowser)
-    drawer.root.append(card, openButton)
+    if (disposed) return
+    if (!launcher) {
+      const card = createElement('div', 'lib-launcher-card')
+      const description = createElement('p')
+      card.append(createElement('h3', '', 'Stored image assets'), description)
+      const openButton = createElement('button', 'lib-button', 'Open Image Browser')
+      openButton.type = 'button'
+      openButton.addEventListener('click', openBrowser)
+      const row = createElement('div', 'lib-launcher-card lib-widget-row')
+      const copy = createElement('div', 'lib-widget-copy')
+      const hint = createElement('div', 'lib-widget-hint')
+      copy.append(createElement('div', 'lib-widget-label', 'Show Widget'), hint)
+      const slot = createElement('div')
+      row.append(copy, slot)
+      drawer.root.replaceChildren(card, openButton, row)
+      launcher = { description, openButton, hint }
+      if (typeof ctx.components?.mountSwitch === 'function') {
+        try {
+          widgetSwitch = ctx.components.mountSwitch(slot, {
+            checked: showWidget, disabled: true, size: 'md', ariaLabel: 'Show Widget', onChange: setWidgetVisibility,
+          })
+        } catch { /* use an accessible switch on older hosts */ }
+      }
+      if (!widgetSwitch) {
+        const label = createElement('label', 'lib-widget-switch')
+        const input = createElement('input')
+        input.type = 'checkbox'
+        input.setAttribute('role', 'switch')
+        input.setAttribute('aria-label', 'Show Widget')
+        input.addEventListener('change', () => setWidgetVisibility(input.checked))
+        label.append(input, createElement('span', 'lib-widget-track'))
+        slot.replaceChildren(label)
+        launcher.input = input
+      }
+    }
+    launcher.description.textContent = permissionGranted === false
+      ? 'Grant the Images permission in the Extensions panel to browse your assets.'
+      : 'Open a wide, paginated thumbnail browser. Safe deletion keeps every referenced image protected.'
+    launcher.openButton.disabled = permissionGranted === false
+    const disabled = !widgetPreferenceReady || permissionGranted !== true
+    widgetSwitch?.update({ checked: showWidget, disabled })
+    if (launcher.input) {
+      launcher.input.checked = showWidget
+      launcher.input.disabled = disabled
+    }
+    launcher.hint.textContent = widgetPreferenceError || widgetUnavailable || 'Show a draggable image icon that opens Image Browser.'
+    launcher.hint.dataset.tone = widgetPreferenceError || widgetUnavailable ? 'warning' : ''
   }
 
   let inputAction = null
@@ -305,9 +536,11 @@ export function setup(ctx) {
     })
     renderBrowser()
     const state = browserState
+    const widgetRevision = widgetPreferenceRevision
     try {
       const { result } = await rpc('image_browser_state_get')
       if (browserState !== state) return
+      applyWidgetPreference(result, widgetRevision)
       const offset = (result.lastPage - 1) * PAGE_SIZE
       state.offset = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0
       state.imageFilter = result.imageFilter
@@ -682,10 +915,13 @@ export function setup(ctx) {
   renderLauncher()
   void rpc('image_browser_permission')
     .then((response) => {
+      if (disposed) return
       permissionGranted = Boolean(response.granted)
       renderLauncher()
+      if (permissionGranted) void loadWidgetPreference()
     })
     .catch(() => {
+      if (disposed) return
       permissionGranted = false
       renderLauncher()
     })
@@ -693,7 +929,10 @@ export function setup(ctx) {
   ctx.ready()
 
   return () => {
+    if (disposed) return
     disposed = true
+    destroyWidget()
+    widgetSwitch?.destroy()
     browserModal?.dismiss()
     browserModal = null
     browserState = null
