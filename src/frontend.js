@@ -3,7 +3,9 @@ import {
   filterImages,
   formatDimensions,
   getPageWindow,
+  hasDimensions,
   isGeneratedImage,
+  isVideoMedia,
   mapWithConcurrency,
   pageNumberToOffset,
   summarizeDeleteResults,
@@ -65,9 +67,10 @@ const STYLES = `
   .lib-card:hover { border-color:color-mix(in srgb, var(--lumiverse-primary) 55%, var(--lumiverse-border)); transform:translateY(-1px); }
   .lib-card[data-selected="true"] { border-color:var(--lumiverse-primary); box-shadow:0 0 0 1px var(--lumiverse-primary); }
   .lib-reference-badge { position:absolute; z-index:2; right:8px; top:8px; padding:4px 7px; border-radius:999px; background:rgba(30,41,59,.88); color:#fff; font-size:10px; font-weight:750; cursor:help; }
+  .lib-video-badge { position:absolute; z-index:1; right:8px; bottom:8px; padding:5px 8px; border-radius:999px; background:rgba(15,23,42,.88); color:#fff; font-size:11px; font-weight:750; pointer-events:none; }
   .lib-check { position:absolute; z-index:2; left:9px; top:9px; display:grid; place-items:center; width:26px; height:26px; border-radius:8px; background:rgba(15,23,42,.78); backdrop-filter:blur(5px); }
   .lib-check input { width:16px; height:16px; accent-color:var(--lumiverse-primary); cursor:pointer; }
-  .lib-preview-button { display:grid; place-items:center; width:100%; aspect-ratio:1/1; min-height:0; overflow:hidden; padding:0; border:0; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 78%, #000 22%); cursor:zoom-in; }
+  .lib-preview-button { position:relative; display:grid; place-items:center; width:100%; aspect-ratio:1/1; min-height:0; overflow:hidden; padding:0; border:0; background:color-mix(in srgb, var(--lumiverse-fill-subtle) 78%, #000 22%); cursor:zoom-in; }
   .lib-thumb { display:block; width:100%; height:100%; object-fit:contain; color:transparent; }
   .lib-thumb-fallback { display:none; place-items:center; width:100%; height:100%; color:var(--lumiverse-text-muted); font-size:12px; }
   .lib-meta { display:grid; gap:5px; padding:10px 11px 12px; }
@@ -521,6 +524,7 @@ export function setup(ctx) {
       total: 0,
       selected: new Set(),
       protectedImages: new Map(),
+      mediaDimensions: new Map(),
       query: '',
       imageFilter: 'all',
       loading: true,
@@ -558,6 +562,7 @@ export function setup(ctx) {
 
   function openPreview(image, previewImages) {
     if (!browserState) return
+    const state = browserState
     const candidates = Array.isArray(previewImages) && previewImages.length > 0
       ? [...previewImages]
       : [image]
@@ -567,7 +572,7 @@ export function setup(ctx) {
     let loadSequence = 0
 
     const preview = ctx.ui.showModal({
-      title: 'Image preview',
+      title: 'Media preview',
       width: 1200,
       maxHeight: Math.min(940, Math.max(420, window.innerHeight - 40)),
     })
@@ -608,23 +613,39 @@ export function setup(ctx) {
         if (dismissed || sequence !== loadSequence) return
         const fullImage = response.result
         if (!fullImage) throw new Error('The image is no longer available.')
-        const isVideo = String(fullImage.mime_type || '').startsWith('video/')
+        const isVideo = isVideoMedia(fullImage)
         const media = createElement(isVideo ? 'video' : 'img', 'lib-full-media')
-        media.src = fullImage.url
+        const dimensions = createElement('span', '', formatDimensions(state.mediaDimensions.get(target.id) || fullImage))
+        const rememberDimensions = (size) => {
+          if (dismissed || sequence !== loadSequence || !hasDimensions(size)) return
+          dimensions.textContent = formatDimensions(size)
+          if (browserState === state) {
+            state.mediaDimensions.set(target.id, { width: size.width, height: size.height })
+            renderBrowser({ preserveGridScroll: true })
+          }
+        }
         if (isVideo) {
           media.controls = true
           media.preload = 'metadata'
+          if (!hasDimensions(fullImage)) {
+            media.addEventListener('loadedmetadata', () => rememberDimensions({ width: media.videoWidth, height: media.videoHeight }))
+          }
         } else {
           media.alt = fullImage.original_filename || 'Full image preview'
+          if (!hasDimensions(fullImage)) {
+            media.addEventListener('load', () => rememberDimensions({ width: media.naturalWidth, height: media.naturalHeight }))
+          }
         }
+        media.src = fullImage.url
         mediaHost.replaceChildren(media)
         meta.replaceChildren(
           createElement('span', 'lib-preview-name', fullImage.original_filename || fullImage.id),
-          createElement('span', '', formatDimensions(fullImage)),
+          dimensions,
           createElement('span', '', fullImage.mime_type || 'Unknown media type'),
           createElement('span', '', relativeDate(fullImage.created_at)),
           createElement('span', '', `${currentIndex + 1} of ${candidates.length}`),
         )
+        if (hasDimensions(fullImage)) rememberDimensions(fullImage)
       } catch (error) {
         if (dismissed || sequence !== loadSequence) return
         mediaHost.replaceChildren(createElement('div', 'lib-preview-error', error instanceof Error ? error.message : String(error)))
@@ -721,6 +742,7 @@ export function setup(ctx) {
   }
 
   function renderCard(image, previewImages) {
+    const isVideo = isVideoMedia(image)
     const card = createElement('article', 'lib-card')
     card.dataset.selected = String(browserState.selected.has(image.id))
     const referencedAt = browserState.protectedImages.get(image.id)
@@ -741,11 +763,11 @@ export function setup(ctx) {
 
     const previewButton = createElement('button', 'lib-preview-button')
     previewButton.type = 'button'
-    previewButton.title = 'Open full image'
-    previewButton.setAttribute('aria-label', `Preview ${image.original_filename || image.id}`)
+    previewButton.title = isVideo ? 'Play video' : 'Open full image'
+    previewButton.setAttribute('aria-label', `Preview ${isVideo ? 'video ' : ''}${image.original_filename || image.id}`)
     const thumbnail = createElement('img', 'lib-thumb')
     thumbnail.src = image.url
-    thumbnail.alt = image.original_filename || 'Image thumbnail'
+    thumbnail.alt = isVideo ? `Video thumbnail: ${image.original_filename || image.id}` : (image.original_filename || 'Image thumbnail')
     thumbnail.loading = 'lazy'
     const fallback = createElement('span', 'lib-thumb-fallback', 'Preview unavailable')
     thumbnail.addEventListener('error', () => {
@@ -753,6 +775,7 @@ export function setup(ctx) {
       fallback.style.display = 'grid'
     })
     previewButton.append(thumbnail, fallback)
+    if (isVideo) previewButton.appendChild(createElement('span', 'lib-video-badge', '▶ Video'))
     previewButton.addEventListener('click', () => openPreview(image, previewImages))
 
     const meta = createElement('div', 'lib-meta')
@@ -760,7 +783,10 @@ export function setup(ctx) {
     filename.title = image.original_filename || image.id
     const details = createElement('div', 'lib-detail')
     const kind = createElement('span', `lib-kind${isGeneratedImage(image) ? ' lib-generated' : ''}`, isGeneratedImage(image) ? 'Generated' : (image.mime_type || 'Unknown'))
-    const dimensions = createElement('span', '', formatDimensions(image))
+    const dimensions = createElement('span', '', formatDimensions(browserState.mediaDimensions.get(image.id) || image))
+    if (isVideo && !hasDimensions(browserState.mediaDimensions.get(image.id) || image)) {
+      dimensions.title = 'Open the video preview to read its dimensions.'
+    }
     details.append(kind, dimensions)
     meta.append(filename, details)
     card.append(checkboxLabel, previewButton, meta)

@@ -13,6 +13,7 @@ class FakeElement {
     this.dataset = {}
     this.classList = { add() {} }
     this.listeners = new Map()
+    this.attributes = new Map()
   }
 
   append(...children) {
@@ -33,7 +34,8 @@ class FakeElement {
   removeEventListener(name, handler) {
     if (this.listeners.get(name) === handler) this.listeners.delete(name)
   }
-  setAttribute() {}
+  setAttribute(name, value) { this.attributes.set(name, value) }
+  focus() {}
   querySelector() { return null }
 }
 
@@ -125,6 +127,9 @@ function browserHarness(t, { widgets = false, nativeSwitch = false, widgetDenied
     ['bob', { lastPage: 1, imageFilter: 'all', showWidget: true, references: {} }],
   ])
   const harness = { account: 'alice', loadError: false, saveError: false, deleted: false, modal: null, requests, accounts, drawer, widgets: [], deferred: [], widgetDenied, deferState }
+  harness.items = [{ id: 'image-1', original_filename: 'image-gen-test.png', url: '/image.png' }]
+  harness.fullImages = new Map()
+  harness.modals = []
   const pointerTarget = new FakeElement()
   Object.defineProperties(globalThis, {
     window: { configurable: true, value: {
@@ -158,8 +163,9 @@ function browserHarness(t, { widgets = false, nativeSwitch = false, widgetDenied
         }
       }
       if (payload.type === 'image_browser_list') response.result = {
-        data: [{ id: 'image-1', original_filename: 'image-gen-test.png', url: '/image.png' }], total: 400,
+        data: harness.items, total: 400,
       }
+      if (payload.type === 'image_browser_get') response.result = harness.fullImages.get(payload.imageId) || harness.items.find((image) => image.id === payload.imageId)
       if (payload.type === 'image_browser_state_patch') {
         if (harness.saveError) response = { ok: false, error: 'Storage write failed' }
         else {
@@ -191,6 +197,7 @@ function browserHarness(t, { widgets = false, nativeSwitch = false, widgetDenied
       showModal() {
         let dismiss
         harness.modal = { root: new FakeElement(), onDismiss(handler) { dismiss = handler }, dismiss() { dismiss?.() } }
+        harness.modals.push(harness.modal)
         return harness.modal
       },
     },
@@ -232,6 +239,94 @@ function browserHarness(t, { widgets = false, nativeSwitch = false, widgetDenied
   })
   return harness
 }
+
+test('videos show a badge over still thumbnails and real preview metadata updates card dimensions', async (t) => {
+  const h = browserHarness(t)
+  h.items = [{ id: 'clip', original_filename: 'image-gen-poster.png', mime_type: 'video/mp4', url: '/poster.webp' }]
+  h.fullImages.set('clip', { ...h.items[0], url: '/clip.mp4' })
+  await h.open()
+  const browser = h.modal
+  assert.equal(h.find((el) => el.className === 'lib-video-badge').textContent, '▶ Video')
+  assert.equal(h.find((el) => el.className === 'lib-thumb').tagName, 'img')
+  const button = h.find((el) => el.className === 'lib-preview-button')
+  assert.equal(button.title, 'Play video')
+  assert.match(button.attributes.get('aria-label'), /video/)
+  assert.ok(h.find((el) => el.textContent === 'Dimensions unavailable'))
+  button.dispatch('click')
+  await flush()
+  const video = h.find((el) => el.className === 'lib-full-media')
+  assert.equal(video.tagName, 'video')
+  assert.equal(video.src, '/clip.mp4')
+  assert.equal(video.controls, true)
+  assert.equal(video.preload, 'metadata')
+  video.videoWidth = 1920
+  video.videoHeight = 1080
+  video.dispatch('loadedmetadata')
+  assert.ok(h.find((el) => el.textContent === '1920 × 1080'))
+  assert.ok(findElement(browser.root, (el) => el.textContent === '1920 × 1080'))
+  assert.ok(findElement(browser.root, (el) => el.className === 'lib-video-badge'))
+})
+
+test('preview uses full media dimensions instead of thumbnail size for images too', async (t) => {
+  const h = browserHarness(t)
+  await h.open()
+  const browser = h.modal
+  const thumbnail = h.find((el) => el.className === 'lib-thumb')
+  thumbnail.naturalWidth = 200
+  thumbnail.naturalHeight = 200
+  thumbnail.dispatch('load')
+  assert.equal(h.find((el) => el.className === 'lib-video-badge'), undefined)
+  assert.equal(h.find((el) => el.textContent === '200 × 200'), undefined)
+  h.find((el) => el.className === 'lib-preview-button').dispatch('click')
+  await flush()
+  const image = h.find((el) => el.className === 'lib-full-media')
+  assert.equal(image.tagName, 'img')
+  image.naturalWidth = 1200
+  image.naturalHeight = 800
+  image.dispatch('load')
+  assert.ok(findElement(browser.root, (el) => el.textContent === '1200 × 800'))
+})
+
+test('late video metadata from previous or dismissed previews cannot change dimensions', async (t) => {
+  const h = browserHarness(t)
+  h.account = 'bob'
+  h.items = [
+    { id: 'clip-1', mime_type: 'video/mp4', url: '/one.mp4' },
+    { id: 'clip-2', mime_type: 'video/mp4', url: '/two.mp4' },
+  ]
+  await h.open()
+  const browser = h.modal
+  h.find((el) => el.className === 'lib-preview-button').dispatch('click')
+  await flush()
+  const first = h.find((el) => el.className === 'lib-full-media')
+  h.find((el) => el.className === 'lib-preview-nav lib-preview-nav-next').dispatch('click')
+  await flush()
+  first.videoWidth = 1111
+  first.videoHeight = 777
+  first.dispatch('loadedmetadata')
+  assert.equal(findElement(browser.root, (el) => el.textContent === '1111 × 777'), undefined)
+  const second = h.find((el) => el.className === 'lib-full-media')
+  second.dispatch('loadedmetadata')
+  assert.ok(h.find((el) => el.textContent === 'Dimensions unavailable'))
+  h.modal.dismiss()
+  second.videoWidth = 2222
+  second.videoHeight = 888
+  second.dispatch('loadedmetadata')
+  assert.equal(findElement(browser.root, (el) => el.textContent === '2222 × 888'), undefined)
+})
+
+test('stored full dimensions update the card and preview without waiting for playback metadata', async (t) => {
+  const h = browserHarness(t)
+  h.account = 'bob'
+  h.items = [{ id: 'clip', mime_type: 'video/webm', url: '/poster.webp' }]
+  h.fullImages.set('clip', { ...h.items[0], url: '/clip.webm', width: 1280, height: 720 })
+  await h.open()
+  const browser = h.modal
+  h.find((el) => el.className === 'lib-preview-button').dispatch('click')
+  await flush()
+  assert.ok(h.find((el) => el.textContent === '1280 × 720'))
+  assert.ok(findElement(browser.root, (el) => el.textContent === '1280 × 720'))
+})
 
 test('opening restores account state before listing, saves navigation, and reloads on account switch', async (t) => {
   const h = browserHarness(t)

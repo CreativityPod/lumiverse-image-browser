@@ -4,7 +4,9 @@ import {
   filterImages,
   formatDimensions,
   getPageWindow,
+  hasDimensions,
   isGeneratedImage,
+  isVideoMedia,
   mapWithConcurrency,
   pageNumberToOffset,
   summarizeDeleteResults,
@@ -23,6 +25,21 @@ test('filters generated images and searchable ownership metadata', () => {
   assert.deepEqual(filterImages(images, 'CHAT-7', 'all').map((image) => image.id), ['b'])
   assert.equal(formatDimensions(images[0]), '1024 × 1024')
   assert.equal(formatDimensions(images[1]), 'Dimensions unavailable')
+})
+
+test('video detection uses the original media type even with an image filename or poster URL', () => {
+  assert.equal(isVideoMedia({ mime_type: 'video/mp4', original_filename: 'poster.png', url: '/poster.webp' }), true)
+  assert.equal(isVideoMedia({ mime_type: ' VIDEO/WEBM ' }), true)
+  assert.equal(isVideoMedia({ mime_type: 'image/gif', original_filename: 'clip.mp4' }), false)
+  assert.equal(isVideoMedia({}), false)
+})
+
+test('missing, zero, and invalid dimensions remain unavailable until real metadata loads', () => {
+  for (const size of [{}, { width: null, height: null }, { width: 0, height: 0 }, { width: -1, height: 720 }, { width: Infinity, height: 720 }]) {
+    assert.equal(hasDimensions(size), false)
+    assert.equal(formatDimensions(size), 'Dimensions unavailable')
+  }
+  assert.equal(formatDimensions({ width: 1920, height: 1080 }), '1920 × 1080')
 })
 
 test('calculates fixed 60-image page windows without accumulating prior pages', () => {
