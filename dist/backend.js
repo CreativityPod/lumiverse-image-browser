@@ -18,6 +18,7 @@ function normalizeState(value, now = Date.now()) {
     version: 1,
     lastPage: Number.isSafeInteger(state.lastPage) && state.lastPage > 0 ? state.lastPage : 1,
     imageFilter: ['all', 'generated', 'non-generated'].includes(state.imageFilter) ? state.imageFilter : 'all',
+    showWidget: typeof state.showWidget === 'boolean' ? state.showWidget : true,
     references: Object.fromEntries(references
       .filter(([id, time]) => validImageId(id) && Number.isFinite(time) && time >= now - REFERENCE_TTL_MS && time <= now)
       .sort((a, b) => b[1] - a[1])
@@ -48,6 +49,9 @@ async function updateUserState(userId, patch) {
   if ('imageFilter' in patch && !['all', 'generated', 'non-generated'].includes(patch.imageFilter)) {
     throw new Error('Invalid image filter')
   }
+  if ('showWidget' in patch && typeof patch.showWidget !== 'boolean') {
+    throw new Error('Invalid widget visibility')
+  }
   for (const key of ['protectedIds', 'deletedIds']) {
     if (key in patch && (!Array.isArray(patch[key]) || !patch[key].every(validImageId))) {
       throw new Error('Invalid image IDs')
@@ -56,6 +60,7 @@ async function updateUserState(userId, patch) {
   const state = await loadUserState(userId)
   if ('lastPage' in patch) state.lastPage = patch.lastPage
   if ('imageFilter' in patch) state.imageFilter = patch.imageFilter
+  if ('showWidget' in patch) state.showWidget = patch.showWidget
   const references = new Map(Object.entries(state.references))
   const now = Date.now()
   for (const id of patch.protectedIds || []) references.set(id, now)
@@ -189,8 +194,8 @@ spindle.onFrontendMessage(async (payload, userId) => {
 })
 
 spindle.permissions.onChanged(({ permission, granted }) => {
-  if (permission !== 'images') return
-  spindle.sendToFrontend({ type: 'image_browser_permission_changed', granted })
+  if (!['images', 'ui_panels'].includes(permission)) return
+  spindle.sendToFrontend({ type: 'image_browser_permission_changed', permission, granted })
 })
 
 for (const eventName of ['IMAGE_UPLOADED', 'IMAGE_DELETED']) {

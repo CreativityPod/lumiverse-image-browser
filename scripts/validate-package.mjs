@@ -9,7 +9,7 @@ const check = (condition, message) => { if (!condition) failures.push(message) }
 check(/^\d+\.\d+\.\d+$/.test(manifest.version), 'version must be semver')
 check(manifest.version === packageJson.version, 'manifest and package versions must match')
 check(/^[a-z][a-z0-9_]*$/.test(manifest.identifier), 'identifier is invalid')
-check(manifest.permissions?.length === 1 && manifest.permissions[0] === 'images', 'only the images permission should be requested')
+check(JSON.stringify(manifest.permissions) === JSON.stringify(['images', 'ui_panels']), 'images and ui_panels permissions should be requested')
 check(manifest.entry_backend === 'dist/backend.js', 'backend entry is invalid')
 check(manifest.entry_frontend === 'dist/frontend.js', 'frontend entry is invalid')
 check(/^https:\/\/github\.com\/[^/]+\/[^/]+$/.test(manifest.github), 'GitHub URL is invalid')
