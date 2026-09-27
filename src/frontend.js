@@ -8,9 +8,11 @@ import {
   pageNumberToOffset,
   summarizeDeleteResults,
 } from './model.js'
+import { imageBrowserIconSvg } from './icon.js'
 
-const ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>'
-const ACTION_ICON_SVG = ICON_SVG.replace('width="20" height="20"', 'width="14" height="14"')
+const ICON_SVG = imageBrowserIconSvg(25, 'drawer')
+const WIDGET_ICON_SVG = imageBrowserIconSvg(32, 'widget')
+const ACTION_ICON_SVG = imageBrowserIconSvg(14, 'action')
 const STYLES = `
   .lib-launcher { display:grid; gap:14px; padding:18px; color:var(--lumiverse-text); }
   .lib-launcher-card { padding:16px; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); }
@@ -32,7 +34,7 @@ const STYLES = `
   .lib-floating-widget { display:grid; place-items:center; width:100%; height:100%; padding:0; border:0; background:transparent; color:var(--lumiverse-primary); cursor:pointer; transition:transform .18s ease; }
   .lib-floating-widget:hover { transform:scale(1.08); }
   .lib-floating-widget:focus-visible { outline:2px solid var(--lumiverse-primary); outline-offset:2px; }
-  .lib-floating-widget svg { display:block; width:25px; height:25px; }
+  .lib-floating-widget svg { display:block; width:32px; height:32px; }
   @media (prefers-reduced-motion:reduce) {
     .lib-floating-widget, .lib-widget-track, .lib-widget-track::after { transition:none; }
   }
@@ -241,7 +243,7 @@ export function setup(ctx) {
       })
       const button = createElement('button', 'lib-floating-widget')
       button.type = 'button'
-      button.innerHTML = ICON_SVG
+      button.innerHTML = WIDGET_ICON_SVG
       button.title = 'Open Image Browser'
       button.setAttribute('aria-label', 'Open Image Browser')
       widgetInteraction = bindDragSafeClick(button, window, openBrowser)

@@ -95,8 +95,29 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results
 }
 
-const ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>'
-const ACTION_ICON_SVG = ICON_SVG.replace('width="20" height="20"', 'width="14" height="14"')
+// SVG recreation of the stacked-photo concept, with bold shapes for small UI sizes.
+function imageBrowserIconSvg(size = 25, variant = 'drawer') {
+  const gradientId = `lib-image-browser-${variant}-gradient`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 64 64" fill="none" aria-hidden="true" focusable="false" style="width:${size}px;height:${size}px;flex-shrink:0;display:block">
+  <defs>
+    <linearGradient id="${gradientId}" x1="7" y1="17" x2="61" y2="49" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a447fb"/>
+      <stop offset=".5" stop-color="#5861ff"/>
+      <stop offset="1" stop-color="#14b9ec"/>
+    </linearGradient>
+  </defs>
+  <path d="M44 3 11 9C5 10 2 14 3 20l5 28c.5 3 2 5 5 6V24c0-6 4-10 10-10h34l-1-3c-1-6-5-9-12-8Z" fill="url(#${gradientId})"/>
+  <path d="m45 7-33 6c-4 .7-6 3-5 7l4 23V24c0-5 3-9 8-10l32-4c-1-2-3-3-6-3Z" fill="#e9e4ff"/>
+  <rect x="14" y="16" width="46" height="43" rx="8" stroke="url(#${gradientId})" stroke-width="4"/>
+  <circle cx="43" cy="29" r="6.5" fill="url(#${gradientId})"/>
+  <path d="m42 46 5-5c1.5-1.5 3.5-1.5 5 1l4 8c1.5 3 0 5-3 5h-4Z" fill="url(#${gradientId})"/>
+  <path d="m18 49 10-12c1.5-2 3.5-2 5 0l12 15c1 1.5.5 3-2 3H21c-4 0-5-3-3-6Z" fill="url(#${gradientId})"/>
+</svg>`
+}
+
+const ICON_SVG = imageBrowserIconSvg(25, 'drawer')
+const WIDGET_ICON_SVG = imageBrowserIconSvg(32, 'widget')
+const ACTION_ICON_SVG = imageBrowserIconSvg(14, 'action')
 const STYLES = `
   .lib-launcher { display:grid; gap:14px; padding:18px; color:var(--lumiverse-text); }
   .lib-launcher-card { padding:16px; border:1px solid var(--lumiverse-border); border-radius:14px; background:var(--lumiverse-fill-subtle); }
@@ -118,7 +139,7 @@ const STYLES = `
   .lib-floating-widget { display:grid; place-items:center; width:100%; height:100%; padding:0; border:0; background:transparent; color:var(--lumiverse-primary); cursor:pointer; transition:transform .18s ease; }
   .lib-floating-widget:hover { transform:scale(1.08); }
   .lib-floating-widget:focus-visible { outline:2px solid var(--lumiverse-primary); outline-offset:2px; }
-  .lib-floating-widget svg { display:block; width:25px; height:25px; }
+  .lib-floating-widget svg { display:block; width:32px; height:32px; }
   @media (prefers-reduced-motion:reduce) {
     .lib-floating-widget, .lib-widget-track, .lib-widget-track::after { transition:none; }
   }
@@ -327,7 +348,7 @@ export function setup(ctx) {
       })
       const button = createElement('button', 'lib-floating-widget')
       button.type = 'button'
-      button.innerHTML = ICON_SVG
+      button.innerHTML = WIDGET_ICON_SVG
       button.title = 'Open Image Browser'
       button.setAttribute('aria-label', 'Open Image Browser')
       widgetInteraction = bindDragSafeClick(button, window, openBrowser)

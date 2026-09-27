@@ -7,6 +7,7 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 - Wide, responsive thumbnail browser in a native Lumiverse modal
 - Drawer launcher, command-palette entry, and chat Extras action
 - Draggable floating image icon that opens the browser directly and remembers its position
+- Custom violet-to-blue stacked-photo SVG: 25 px in the drawer and 32 px in the floating widget
 - **Show Widget** switch in the drawer; visibility changes immediately and is saved per account
 - Paginated browsing with All, Generated, and Non-generated views and correctly filtered totals
 - Remembers the last successfully loaded page for the signed-in Lumiverse account
@@ -50,7 +51,7 @@ The project is dependency-free and uses Node.js 20 or later.
 npm run check
 ```
 
-`npm run build` emits a self-contained frontend bundle plus the backend entry into `dist/`. Commit the built files before publishing because Lumiverse installs the repository contents directly.
+`npm run build` emits a self-contained frontend bundle, the backend entry, and a standalone `image-browser.svg` into `dist/`. The icon's editable vector source is `src/icon.js`; each UI surface uses its own size and gradient ID. Commit the built files before publishing because Lumiverse installs the repository contents directly.
 
 ## Known boundaries
 
