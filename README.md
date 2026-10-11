@@ -17,7 +17,8 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 - Full-resolution, contained image previews; stored videos use native controls
 - Videos have a **▶ Video** badge on their thumbnails, including when a still poster is shown
 - Missing dimensions are read from the original media when its preview loads and appear on its card for the current browser session
-- Optional single-image picker for QuickGen v0.1.7 or later, with full-library search, still-image filtering, and **Use image** / **Cancel** controls
+- Optional single-image picker for QuickGen v0.1.7 or later, opening on Generated with full-library search, still-image filtering, and **Use image** / **Cancel** controls
+- Shared image cards and thumbnail previews in both modes; select one image with its radio control in the picker, then confirm with **Use image**
 - Multi-selection across loaded pages in the normal management view
 - Safe bulk cleanup through Lumiverse's existing `unused=true` deletion path
 - Referenced images remain stored and are marked as protected after a cleanup attempt

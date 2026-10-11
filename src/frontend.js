@@ -577,7 +577,7 @@ export function setup(ctx) {
       protectedImages: new Map(),
       mediaDimensions: new Map(),
       query: '',
-      imageFilter: 'all',
+      imageFilter: picker ? 'generated' : 'all',
       loading: true,
       storageReady: false,
       storageError: '',
@@ -604,7 +604,7 @@ export function setup(ctx) {
       applyWidgetPreference(result, widgetRevision)
       const offset = picker ? 0 : (result.lastPage - 1) * PAGE_SIZE
       state.offset = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0
-      state.imageFilter = picker ? 'all' : result.imageFilter
+      if (!picker) state.imageFilter = result.imageFilter
       state.protectedImages = new Map(Object.entries(result.references))
       state.storageReady = true
     } catch (error) {
@@ -838,18 +838,7 @@ export function setup(ctx) {
     })
     previewButton.append(thumbnail, fallback)
     if (isVideo) previewButton.appendChild(createElement('span', 'lib-video-badge', '▶ Video'))
-    previewButton.addEventListener('click', () => {
-      if (state.picker) {
-        if (state.confirming) return
-        state.selected.clear(); state.selected.add(image.id); state.selectedImage = image
-        renderBrowser({ preserveGridScroll: true })
-      } else openPreview(image, previewImages)
-    })
-    if (state.picker) {
-      previewButton.title = 'Select image'
-      previewButton.setAttribute('aria-label', `Select ${image.original_filename || image.id}`)
-      previewButton.setAttribute('aria-pressed', String(state.selected.has(image.id)))
-    }
+    previewButton.addEventListener('click', () => openPreview(image, previewImages))
 
     const meta = createElement('div', 'lib-meta')
     const filename = createElement('div', 'lib-filename', image.original_filename || image.id)
@@ -862,13 +851,6 @@ export function setup(ctx) {
     }
     details.append(kind, dimensions)
     meta.append(filename, details)
-    if (state.picker) {
-      const preview = createElement('button', 'lib-button lib-button-quiet', 'Preview')
-      preview.type = 'button'
-      preview.setAttribute('aria-label', `Preview ${image.original_filename || image.id}`)
-      preview.addEventListener('click', () => openPreview(image, previewImages))
-      meta.appendChild(preview)
-    }
     card.append(checkboxLabel, previewButton, meta)
     if (Number.isFinite(referencedAt)) {
       const badge = createElement('span', 'lib-reference-badge', 'Referenced')
