@@ -182,6 +182,28 @@ test('gets a full image for preview', async () => {
   assert.equal(harness.sent[0].payload.result.url, '/api/v1/images/image-1')
 })
 
+test('picker searches the whole still-image library before pagination and keeps category totals accurate', async () => {
+  const images = [
+    ...Array.from({ length: 205 }, (_, i) => ({ id: `image-${i}`, mime_type: 'image/png', original_filename: `photo-${i}.png` })),
+    { id: 'older-match', mime_type: 'image/png', original_filename: 'image-gen-needle.png' },
+    { id: 'uploaded-match', mime_type: 'image/png', original_filename: 'needle-upload.png' },
+    { id: 'video', mime_type: 'video/mp4', original_filename: 'image-gen-needle-video.png' },
+  ]
+  const h = await createHarness(true, ({ offset, limit }) => ({ data: images.slice(offset, offset + limit), total: images.length }))
+  await h.frontendHandler({ type: 'image_browser_list', picker: true, query: 'NEEDLE', limit: 1, offset: 1 }, 'alice')
+  assert.equal(h.listCalls.length, 2)
+  assert.ok(h.listCalls.every((call) => call.userId === 'alice'))
+  assert.equal(h.sent.at(-1).payload.result.total, 2)
+  assert.equal(h.sent.at(-1).payload.result.data[0].id, 'uploaded-match')
+  await h.frontendHandler({ type: 'image_browser_list', picker: true, query: 'needle', imageFilter: 'generated' }, 'alice')
+  assert.equal(h.sent.at(-1).payload.result.total, 1)
+  assert.equal(h.sent.at(-1).payload.result.data[0].id, 'older-match')
+  await h.frontendHandler({ type: 'image_browser_list', picker: true, query: 'needle', imageFilter: 'non-generated' }, 'alice')
+  assert.equal(h.sent.at(-1).payload.result.total, 1)
+  assert.equal(h.sent.at(-1).payload.result.data[0].id, 'uploaded-match')
+  assert.equal(h.listCalls.length, 2)
+})
+
 test('paginates generated and non-generated images from one invalidated classification cache', async () => {
   const allImages = [
     { id: 'regular-1', original_filename: 'portrait.png' },

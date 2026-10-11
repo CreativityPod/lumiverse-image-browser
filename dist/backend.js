@@ -83,6 +83,7 @@ async function listClassifiedImages(userId) {
   const pending = (async () => {
     const generatedImages = []
     const nonGeneratedImages = []
+    const allImages = []
     let offset = 0
     let total = 0
     do {
@@ -95,13 +96,14 @@ async function listClassifiedImages(userId) {
       const images = Array.isArray(result.data) ? result.data : []
       total = Math.max(0, Number(result.total) || 0)
       for (const image of images) {
+        allImages.push(image)
         if (isGeneratedImage(image)) generatedImages.push(image)
         else nonGeneratedImages.push(image)
       }
       offset += images.length
       if (images.length === 0) break
     } while (offset < total)
-    return { generated: generatedImages, nonGenerated: nonGeneratedImages }
+    return { all: allImages, generated: generatedImages, nonGenerated: nonGeneratedImages }
   })()
 
   classifiedImageCache.set(userId, pending)
@@ -163,9 +165,14 @@ spindle.onFrontendMessage(async (payload, userId) => {
         : payload.imageFilter === 'non-generated'
           ? 'nonGenerated'
           : 'all'
-      const result = imageFilter !== 'all'
+      const result = imageFilter !== 'all' || payload.picker === true
         ? await listClassifiedImages(userId).then((imagesByType) => {
-            const images = imagesByType[imageFilter]
+            const needle = payload.picker === true ? String(payload.query || '').trim().toLowerCase() : ''
+            const images = imagesByType[imageFilter].filter((image) => {
+              if (payload.picker === true && !String(image.mime_type || '').startsWith('image/')) return false
+              return !needle || [image.id, image.original_filename, image.owner_character_id, image.owner_chat_id, image.owner_extension_identifier]
+                .some((value) => typeof value === 'string' && value.toLowerCase().includes(needle))
+            })
             return {
               data: images.slice(offset, offset + limit),
               total: images.length,

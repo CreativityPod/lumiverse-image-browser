@@ -1,5 +1,7 @@
 # Lumiverse Image Browser
 
+**Current version:** 0.1.9
+
 Browse, preview, select, and safely remove unreferenced images stored by Lumiverse without opening a shell in the Docker container.
 
 ## Features
@@ -15,7 +17,8 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 - Full-resolution, contained image previews; stored videos use native controls
 - Videos have a **▶ Video** badge on their thumbnails, including when a still poster is shown
 - Missing dimensions are read from the original media when its preview loads and appear on its card for the current browser session
-- Multi-selection across loaded pages
+- Optional single-image picker for QuickGen v0.1.7 or later, with full-library search, still-image filtering, and **Use image** / **Cancel** controls
+- Multi-selection across loaded pages in the normal management view
 - Safe bulk cleanup through Lumiverse's existing `unused=true` deletion path
 - Referenced images remain stored and are marked as protected after a cleanup attempt
 
@@ -58,5 +61,9 @@ npm run check
 ## Known boundaries
 
 - Accurate reference badges cannot be displayed before a safe deletion attempt with the current public Spindle API.
-- Search filters the currently loaded page; use the page controls to browse the rest of the collection.
+- In the normal management view, search filters the currently loaded page; use the page controls to browse the rest of the collection. In the QuickGen picker, search covers the full library of still images.
 - The extension uses Lumiverse's authenticated image URLs and must run inside the signed-in Lumiverse application.
+
+## Version history
+
+- **0.1.9** — Added a single-image picker for QuickGen, with library-wide search, generated and non-generated filters, previews, and cancellation.

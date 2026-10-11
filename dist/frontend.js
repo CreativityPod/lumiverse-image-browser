@@ -307,6 +307,8 @@ export function setup(ctx) {
   let requestSequence = 0
   let browserModal = null
   let browserState = null
+  const previewModals = new Set()
+  const pickerEvents = { probe: 'image_browser:picker:probe', availability: 'image_browser:picker:availability', request: 'image_browser:picker:request', result: 'image_browser:picker:result', cancel: 'image_browser:picker:cancel' }
   let permissionGranted = null
   let disposed = false
   let showWidget = true
@@ -317,6 +319,37 @@ export function setup(ctx) {
   let widgetPreferenceError = ''
   let widgetUnavailable = ''
   let uiPanelsGranted = null
+
+  function emitPicker(event, payload) {
+    try { ctx.events?.emit(event, payload) }
+    catch (error) { if (!disposed) throw error } // The host may invalidate events before teardown.
+  }
+
+  function announcePicker() {
+    emitPicker(pickerEvents.availability, { version: 1, provider: 'image_browser', available: !disposed && permissionGranted === true })
+  }
+  function sendPickerResult(picker, status, extra = {}) {
+    emitPicker(pickerEvents.result, { version: 1, provider: 'image_browser', requester: picker.requester, requestId: picker.requestId, status, ...extra })
+  }
+  function finishPicker(status, extra = {}) {
+    if (!browserState?.picker) return
+    const picker = browserState.picker
+    browserState.picker = null
+    sendPickerResult(picker, status, extra)
+    browserModal?.dismiss()
+  }
+  const unsubscribePickerProbe = ctx.events?.on(pickerEvents.probe, announcePicker)
+  const unsubscribePickerRequest = ctx.events?.on(pickerEvents.request, (request) => {
+    if (request?.version !== 1 || request.requester !== 'quick_gen' || typeof request.requestId !== 'string' || !request.requestId || request.requestId.length > 256 || disposed) return
+    if (permissionGranted !== true || browserModal) {
+      sendPickerResult(request, 'error', { error: browserModal ? 'Image Browser is already open. Close it and try again.' : 'Enable Image Browser and grant its Images permission.' })
+      return
+    }
+    void openBrowser(request)
+  })
+  const unsubscribePickerCancel = ctx.events?.on(pickerEvents.cancel, (request) => {
+    if (request?.version === 1 && request.requester === browserState?.picker?.requester && request.requestId === browserState?.picker?.requestId) finishPicker('cancelled')
+  })
   let floatingWidget = null
   let widgetInteraction = null
   let unsubscribeDrag = null
@@ -455,6 +488,7 @@ export function setup(ctx) {
         return
       }
       permissionGranted = Boolean(payload.granted)
+      announcePicker()
       widgetPreferenceRevision += 1
       if (permissionGranted) void loadWidgetPreference()
       else {
@@ -466,6 +500,7 @@ export function setup(ctx) {
         browserState.permissionGranted = permissionGranted
         renderBrowser()
       }
+      if (!permissionGranted) finishPicker('cancelled')
       return
     }
     if (payload.type === 'image_browser_assets_changed') return
@@ -560,8 +595,10 @@ export function setup(ctx) {
 
   async function loadPage(offset = 0) {
     const state = browserState
-    if (!state || state.loading) return
+    if (!state) return
     const requestedOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
+    if (state.loading) { state.queuedOffset = requestedOffset; return }
+    const { imageFilter, query, picker } = state
     state.loading = true
     state.status = `Loading images ${requestedOffset + 1}–${requestedOffset + PAGE_SIZE}…`
     state.tone = ''
@@ -571,7 +608,8 @@ export function setup(ctx) {
       let response = await rpc('image_browser_list', {
         limit: PAGE_SIZE,
         offset: resolvedOffset,
-        imageFilter: state.imageFilter,
+        imageFilter,
+        ...(picker ? { picker: true, query } : {}),
       })
       if (browserState !== state) return
       let result = response.result || { data: [], total: 0 }
@@ -583,19 +621,22 @@ export function setup(ctx) {
         response = await rpc('image_browser_list', {
           limit: PAGE_SIZE,
           offset: resolvedOffset,
-          imageFilter: state.imageFilter,
+          imageFilter,
+          ...(picker ? { picker: true, query } : {}),
         })
         if (browserState !== state) return
         result = response.result || { data: [], total: 0 }
       }
 
+      if (state.imageFilter !== imageFilter || (picker && state.query !== query)) return
       state.items = Array.isArray(result.data) ? result.data : []
+      if (picker) state.items = state.items.filter((image) => String(image.mime_type || '').startsWith('image/'))
       state.total = Math.max(0, Number(result.total) || 0)
       state.offset = resolvedOffset
       state.permissionGranted = true
       permissionGranted = true
       const page = getPageWindow(state.offset, state.items.length, state.total)
-      await saveState(state, { lastPage: page.pageNumber, imageFilter: state.imageFilter })
+      if (!picker) await saveState(state, { lastPage: page.pageNumber, imageFilter: state.imageFilter })
       if (browserState !== state) return
       state.status = state.items.length
         ? `Showing ${page.start}–${page.end} of ${state.total} images.`
@@ -619,11 +660,17 @@ export function setup(ctx) {
       state.loading = false
       renderLauncher()
       renderBrowser()
+      if (state.queuedOffset !== undefined) {
+        const queued = state.queuedOffset
+        delete state.queuedOffset
+        void loadPage(queued)
+      }
     }
   }
 
-  async function openBrowser() {
+  async function openBrowser(request = null) {
     if (disposed || browserModal) return
+    const picker = request?.requester === 'quick_gen' && request.version === 1 ? request : null
     browserModal = ctx.ui.showModal({
       title: 'Image Browser',
       width: 1120,
@@ -631,6 +678,10 @@ export function setup(ctx) {
     })
     browserState = {
       root: browserModal.root,
+      picker,
+      selectedImage: null,
+      confirming: false,
+      searchTimer: null,
       items: [],
       offset: 0,
       total: 0,
@@ -649,9 +700,13 @@ export function setup(ctx) {
     }
     browserState.root.classList.add('lib-shell')
     browserModal.onDismiss(() => {
+      if (browserState?.picker) sendPickerResult(browserState.picker, 'cancelled')
+      window.clearTimeout(browserState?.searchTimer)
+      for (const preview of previewModals) preview.dismiss()
       browserModal = null
       browserState = null
     })
+    if (picker) sendPickerResult(picker, 'opened')
     renderBrowser()
     const state = browserState
     const widgetRevision = widgetPreferenceRevision
@@ -659,9 +714,9 @@ export function setup(ctx) {
       const { result } = await rpc('image_browser_state_get')
       if (browserState !== state) return
       applyWidgetPreference(result, widgetRevision)
-      const offset = (result.lastPage - 1) * PAGE_SIZE
+      const offset = picker ? 0 : (result.lastPage - 1) * PAGE_SIZE
       state.offset = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0
-      state.imageFilter = result.imageFilter
+      state.imageFilter = picker ? 'all' : result.imageFilter
       state.protectedImages = new Map(Object.entries(result.references))
       state.storageReady = true
     } catch (error) {
@@ -688,6 +743,7 @@ export function setup(ctx) {
       width: 1200,
       maxHeight: Math.min(940, Math.max(420, window.innerHeight - 40)),
     })
+    previewModals.add(preview)
     const shell = createElement('div', 'lib-preview-shell')
     const stage = createElement('div', 'lib-preview-stage')
     const mediaHost = createElement('div', 'lib-preview-media')
@@ -782,6 +838,7 @@ export function setup(ctx) {
       }
     })
     preview.onDismiss(() => {
+      previewModals.delete(preview)
       dismissed = true
       loadSequence += 1
     })
@@ -793,7 +850,7 @@ export function setup(ctx) {
   }
 
   async function deleteSelected() {
-    if (!browserState || browserState.deleting || browserState.selected.size === 0) return
+    if (!browserState || browserState.picker || browserState.deleting || browserState.selected.size === 0) return
     const state = browserState
     const ids = [...browserState.selected]
     const knownProtectedCount = ids.filter((id) => browserState.protectedImages.has(id)).length
@@ -854,6 +911,7 @@ export function setup(ctx) {
   }
 
   function renderCard(image, previewImages) {
+    const state = browserState
     const isVideo = isVideoMedia(image)
     const card = createElement('article', 'lib-card')
     card.dataset.selected = String(browserState.selected.has(image.id))
@@ -863,10 +921,13 @@ export function setup(ctx) {
     const checkboxLabel = createElement('label', 'lib-check')
     checkboxLabel.title = 'Select image'
     const checkbox = document.createElement('input')
-    checkbox.type = 'checkbox'
+    checkbox.type = state.picker ? 'radio' : 'checkbox'
+    if (state.picker) checkbox.name = 'image-browser-picker-selection'
+    checkbox.disabled = state.confirming
     checkbox.checked = browserState.selected.has(image.id)
     checkbox.setAttribute('aria-label', `Select ${image.original_filename || image.id}`)
     checkbox.addEventListener('change', () => {
+      if (state.picker && checkbox.checked) { state.selected.clear(); state.selectedImage = image }
       if (checkbox.checked) browserState.selected.add(image.id)
       else browserState.selected.delete(image.id)
       renderBrowser({ preserveGridScroll: true })
@@ -875,6 +936,7 @@ export function setup(ctx) {
 
     const previewButton = createElement('button', 'lib-preview-button')
     previewButton.type = 'button'
+    previewButton.disabled = state.confirming
     previewButton.title = isVideo ? 'Play video' : 'Open full image'
     previewButton.setAttribute('aria-label', `Preview ${isVideo ? 'video ' : ''}${image.original_filename || image.id}`)
     const thumbnail = createElement('img', 'lib-thumb')
@@ -888,7 +950,18 @@ export function setup(ctx) {
     })
     previewButton.append(thumbnail, fallback)
     if (isVideo) previewButton.appendChild(createElement('span', 'lib-video-badge', '▶ Video'))
-    previewButton.addEventListener('click', () => openPreview(image, previewImages))
+    previewButton.addEventListener('click', () => {
+      if (state.picker) {
+        if (state.confirming) return
+        state.selected.clear(); state.selected.add(image.id); state.selectedImage = image
+        renderBrowser({ preserveGridScroll: true })
+      } else openPreview(image, previewImages)
+    })
+    if (state.picker) {
+      previewButton.title = 'Select image'
+      previewButton.setAttribute('aria-label', `Select ${image.original_filename || image.id}`)
+      previewButton.setAttribute('aria-pressed', String(state.selected.has(image.id)))
+    }
 
     const meta = createElement('div', 'lib-meta')
     const filename = createElement('div', 'lib-filename', image.original_filename || image.id)
@@ -901,6 +974,13 @@ export function setup(ctx) {
     }
     details.append(kind, dimensions)
     meta.append(filename, details)
+    if (state.picker) {
+      const preview = createElement('button', 'lib-button lib-button-quiet', 'Preview')
+      preview.type = 'button'
+      preview.setAttribute('aria-label', `Preview ${image.original_filename || image.id}`)
+      preview.addEventListener('click', () => openPreview(image, previewImages))
+      meta.appendChild(preview)
+    }
     card.append(checkboxLabel, previewButton, meta)
     if (Number.isFinite(referencedAt)) {
       const badge = createElement('span', 'lib-reference-badge', 'Referenced')
@@ -913,10 +993,11 @@ export function setup(ctx) {
   function renderBrowser({ preserveGridScroll = false } = {}) {
     if (!browserState?.root) return
     const state = browserState
+    const searchFocused = document.activeElement === state.root.querySelector('.lib-search')
     const previousGridScrollTop = preserveGridScroll
       ? Math.max(0, Number(state.root.querySelector('.lib-grid')?.scrollTop) || 0)
       : 0
-    const visibleImages = filterImages(state.items, state.query, state.imageFilter)
+    const visibleImages = state.picker ? state.items : filterImages(state.items, state.query, state.imageFilter)
     const page = getPageWindow(state.offset, state.items.length, state.total)
     state.root.replaceChildren()
 
@@ -935,10 +1016,16 @@ export function setup(ctx) {
     const toolbar = createElement('div', 'lib-toolbar')
     const search = createElement('input', 'lib-search')
     search.type = 'search'
-    search.placeholder = 'Filter loaded images by filename, ID, or owner…'
+    search.disabled = state.confirming
+    search.placeholder = state.picker ? 'Search all images by filename, ID, or owner…' : 'Filter loaded images by filename, ID, or owner…'
     search.value = state.query
     search.addEventListener('input', () => {
       state.query = search.value
+      if (state.picker) {
+        window.clearTimeout(state.searchTimer)
+        state.searchTimer = window.setTimeout(() => { if (browserState === state) void loadPage(0) }, 250)
+        return
+      }
       renderBrowser({ preserveGridScroll: true })
       const replacement = state.root.querySelector('.lib-search')
       replacement?.focus()
@@ -961,7 +1048,7 @@ export function setup(ctx) {
       radio.name = 'image-browser-type-filter'
       radio.value = option.value
       radio.checked = state.imageFilter === option.value
-      radio.disabled = state.loading || state.deleting
+      radio.disabled = state.loading || state.deleting || state.confirming
       radio.addEventListener('change', () => {
         if (!radio.checked || state.imageFilter === option.value) return
         state.imageFilter = option.value
@@ -1047,9 +1134,37 @@ export function setup(ctx) {
     deleteButton.addEventListener('click', () => void deleteSelected())
     footerActions.append(previousButton, pageJump, nextButton, deleteButton)
     footer.append(selectAllLabel, footerActions)
+    if (state.picker) {
+      selectAllLabel.replaceChildren(document.createTextNode(state.selectedImage ? `Selected: ${state.selectedImage.original_filename || state.selectedImage.id}` : 'Choose one image.'))
+      footerActions.replaceChildren(previousButton, pageJump, nextButton)
+      const cancel = createElement('button', 'lib-button lib-button-quiet', 'Cancel')
+      cancel.type = 'button'
+      cancel.addEventListener('click', () => finishPicker('cancelled'))
+      const use = createElement('button', 'lib-button', 'Use image')
+      use.type = 'button'
+      use.disabled = !state.selectedImage || state.confirming || state.permissionGranted !== true
+      use.addEventListener('click', async () => {
+        if (!state.selectedImage || state.confirming || state.permissionGranted !== true) return
+        state.confirming = true; renderBrowser({ preserveGridScroll: true })
+        try {
+          const { result } = await rpc('image_browser_get', { imageId: state.selectedImage.id })
+          if (browserState !== state || !state.picker) return
+          if (!result || !String(result.mime_type || '').startsWith('image/')) throw new Error('This image is unavailable. Choose another image.')
+          finishPicker('selected', { imageId: result.id })
+        } catch (error) {
+          if (browserState !== state) return
+          state.status = error instanceof Error ? error.message : String(error)
+          state.tone = 'error'
+        } finally {
+          if (browserState === state) { state.confirming = false; renderBrowser({ preserveGridScroll: true }) }
+        }
+      })
+      footerActions.append(cancel, use)
+    }
 
     state.root.append(summary, toolbar, status, grid, footer)
     if (preserveGridScroll) grid.scrollTop = previousGridScrollTop
+    if (searchFocused) search.focus()
   }
 
   renderLauncher()
@@ -1057,12 +1172,14 @@ export function setup(ctx) {
     .then((response) => {
       if (disposed) return
       permissionGranted = Boolean(response.granted)
+      announcePicker()
       renderLauncher()
       if (permissionGranted) void loadWidgetPreference()
     })
     .catch(() => {
       if (disposed) return
       permissionGranted = false
+      announcePicker()
       renderLauncher()
     })
 
@@ -1071,6 +1188,10 @@ export function setup(ctx) {
   return () => {
     if (disposed) return
     disposed = true
+    announcePicker()
+    unsubscribePickerProbe?.()
+    unsubscribePickerRequest?.()
+    unsubscribePickerCancel?.()
     destroyWidget()
     widgetSwitch?.destroy()
     browserModal?.dismiss()
