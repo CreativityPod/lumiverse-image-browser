@@ -165,17 +165,30 @@ spindle.onFrontendMessage(async (payload, userId) => {
         : payload.imageFilter === 'non-generated'
           ? 'nonGenerated'
           : 'all'
+      const selectedImageId = payload.picker === true && validImageId(payload.selectedImageId)
+        ? payload.selectedImageId
+        : null
       const result = imageFilter !== 'all' || payload.picker === true
         ? await listClassifiedImages(userId).then((imagesByType) => {
-            const needle = payload.picker === true ? String(payload.query || '').trim().toLowerCase() : ''
-            const images = imagesByType[imageFilter].filter((image) => {
+            const selectedImage = selectedImageId
+              ? imagesByType.all.find((image) => image.id === selectedImageId && String(image.mime_type || '').startsWith('image/'))
+              : null
+            const resolvedFilter = selectedImageId
+              ? selectedImage && !isGeneratedImage(selectedImage) ? 'nonGenerated' : 'generated'
+              : imageFilter
+            const needle = payload.picker === true && !selectedImageId ? String(payload.query || '').trim().toLowerCase() : ''
+            const images = imagesByType[resolvedFilter].filter((image) => {
               if (payload.picker === true && !String(image.mime_type || '').startsWith('image/')) return false
               return !needle || [image.id, image.original_filename, image.owner_character_id, image.owner_chat_id, image.owner_extension_identifier]
                 .some((value) => typeof value === 'string' && value.toLowerCase().includes(needle))
             })
+            const resolvedOffset = selectedImageId
+              ? selectedImage ? Math.floor(images.findIndex((image) => image.id === selectedImageId) / limit) * limit : 0
+              : offset
             return {
-              data: images.slice(offset, offset + limit),
+              data: images.slice(resolvedOffset, resolvedOffset + limit),
               total: images.length,
+              ...(selectedImageId ? { offset: resolvedOffset, imageFilter: resolvedFilter === 'nonGenerated' ? 'non-generated' : resolvedFilter } : {}),
             }
           })
         : await spindle.images.list({

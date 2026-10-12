@@ -19,6 +19,7 @@ Browse, preview, select, and safely remove unreferenced images stored by Lumiver
 - Missing dimensions are read from the original media when its preview loads and appear on its card for the current browser session
 - Optional single-image picker for QuickGen v0.1.7 or later, opening on Generated with full-library search, still-image filtering, and **Use image** / **Cancel** controls
 - Shared image cards and thumbnail previews in both modes; select one image with its radio control in the picker, then confirm with **Use image**
+- Reopening the picker from QuickGen reveals its current source image on the correct page and marks it selected; uploaded images open in Non-generated, while missing selections fall back to Generated page 1 with a notice
 - Multi-selection across loaded pages in the normal management view
 - Safe bulk cleanup through Lumiverse's existing `unused=true` deletion path
 - Referenced images remain stored and are marked as protected after a cleanup attempt

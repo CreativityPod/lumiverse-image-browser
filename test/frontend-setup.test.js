@@ -36,6 +36,7 @@ class FakeElement {
   }
   setAttribute(name, value) { this.attributes.set(name, value) }
   focus() {}
+  scrollIntoView(options) { this.scrollOptions = options }
   querySelector() { return null }
 }
 
@@ -241,6 +242,77 @@ test('picker search requests library-wide matches from the first page', async (t
   assert.equal(request.offset, 0)
 })
 
+for (const imageFilter of ['generated', 'non-generated']) {
+  test(`picker restores and reveals a selected ${imageFilter} image, then allows ordinary navigation`, async (t) => {
+    const h = browserHarness(t)
+    h.loadError = true
+    const selected = { id: 'selected', original_filename: imageFilter === 'generated' ? 'image-gen-selected.png' : 'portrait.png', mime_type: 'image/png', url: '/selected.png' }
+    const other = { id: 'other', original_filename: 'other.png', mime_type: 'image/png', url: '/other.png' }
+    h.items = [other, selected]
+    h.listResult = (request) => request.selectedImageId
+      ? { data: h.items, total: 200, offset: 120, imageFilter }
+      : { data: [other], total: 200 }
+    await h.pickerOpen('restore', selected.id)
+    const request = h.requests.filter((request) => request.type === 'image_browser_list').at(-1)
+    assert.equal(request.selectedImageId, selected.id)
+    assert.equal(request.query, '')
+    assert.equal(h.find((el) => el.className === 'lib-page-input').value, '3')
+    assert.equal(h.find((el) => el.name === 'image-browser-type-filter' && el.value === imageFilter).checked, true)
+    assert.equal(h.find((el) => el.attributes?.get('aria-label') === `Select ${selected.original_filename}`).checked, true)
+    const card = h.find((el) => el.className === 'lib-card' && el.dataset.selected === 'true')
+    assert.deepEqual(card.scrollOptions, { block: 'nearest', inline: 'nearest' })
+    assert.ok(h.find((el) => el.textContent === `Selected: ${selected.original_filename}`))
+    assert.equal(h.find((el) => el.textContent === 'Use image').disabled, false)
+    h.find((el) => el.textContent === 'Next').dispatch('click')
+    await flush()
+    const next = h.requests.filter((request) => request.type === 'image_browser_list').at(-1)
+    assert.equal(next.offset, 180)
+    assert.equal(next.imageFilter, imageFilter)
+    assert.equal(next.selectedImageId, undefined)
+    assert.ok(h.find((el) => el.textContent === `Selected: ${selected.original_filename}`))
+    assert.equal(h.requests.filter((request) => request.type === 'image_browser_state_patch').length, 0)
+    h.find((el) => el.textContent === 'Use image').dispatch('click')
+    await flush()
+    assert.equal(h.eventMessages.filter(({ payload }) => payload.status === 'selected').at(-1).payload.imageId, selected.id)
+  })
+}
+
+test('unavailable selected image reopens Generated page one with a notice and no selection', async (t) => {
+  const h = browserHarness(t)
+  h.account = 'bob'
+  h.listResult = () => ({ data: h.items, total: 200, offset: 0, imageFilter: 'generated' })
+  await h.pickerOpen('missing', 'missing-image')
+  assert.equal(h.find((el) => el.className === 'lib-page-input').value, '1')
+  assert.equal(h.find((el) => el.name === 'image-browser-type-filter' && el.value === 'generated').checked, true)
+  assert.ok(h.find((el) => el.textContent === 'Choose one image.'))
+  assert.ok(h.find((el) => el.className === 'lib-status').textContent.includes('previously selected image is unavailable'))
+  assert.equal(h.find((el) => el.className === 'lib-status').dataset.tone, 'warning')
+  assert.equal(h.find((el) => el.textContent === 'Use image').disabled, true)
+  assert.equal(h.find((el) => el.className === 'lib-card' && el.dataset.selected === 'true'), undefined)
+  h.find((el) => el.textContent === 'Next').dispatch('click')
+  await flush()
+  assert.equal(h.find((el) => el.className === 'lib-status').textContent.includes('unavailable'), false)
+  assert.equal(h.accounts.get('bob').imageFilter, 'all')
+  assert.equal(h.eventMessages.filter(({ payload }) => payload.status === 'selected').length, 0)
+})
+
+test('late restoration after cancelling cannot select or scroll an image in a new picker', async (t) => {
+  const h = browserHarness(t)
+  h.deferList = true
+  h.listResult = () => ({ data: h.items, total: 200, offset: 60, imageFilter: 'generated' })
+  await h.pickerOpen('old', 'image-1')
+  const respond = h.deferredLists.shift()
+  h.find((el) => el.textContent === 'Cancel').dispatch('click')
+  h.deferList = false
+  await h.pickerOpen('new')
+  respond()
+  await flush()
+  assert.ok(h.find((el) => el.textContent === 'Choose one image.'))
+  assert.equal(h.find((el) => el.className === 'lib-page-input').value, '1')
+  assert.equal(h.find((el) => el.className === 'lib-card').scrollOptions, undefined)
+  assert.equal(h.eventMessages.filter(({ payload }) => payload.status === 'selected').length, 0)
+})
+
 test('picker refuses deleted or video sources at confirmation and handles requester cancellation', async (t) => {
   const h = browserHarness(t)
   await h.pickerOpen()
@@ -278,6 +350,7 @@ function browserHarness(t, { widgets = false, nativeSwitch = false, widgetDenied
   ])
   const harness = { account: 'alice', loadError: false, saveError: false, deleted: false, modal: null, requests, accounts, drawer, widgets: [], deferred: [], widgetDenied, deferState }
   harness.items = [{ id: 'image-1', original_filename: 'image-gen-test.png', mime_type: 'image/png', url: '/image.png' }]
+  harness.deferredLists = []
   harness.fullImages = new Map()
   harness.modals = []
   const pointerTarget = new FakeElement()
@@ -326,8 +399,12 @@ function browserHarness(t, { widgets = false, nativeSwitch = false, widgetDenied
           return
         }
       }
-      if (payload.type === 'image_browser_list') response.result = {
-        data: harness.items, total: 400,
+      if (payload.type === 'image_browser_list') {
+        response.result = harness.listResult ? harness.listResult(payload) : { data: harness.items, total: 400 }
+        if (harness.deferList) {
+          harness.deferredLists.push(() => receive({ requestId: payload.requestId, ...response }))
+          return
+        }
       }
       if (payload.type === 'image_browser_get') response.result = harness.fullImages.get(payload.imageId) || harness.items.find((image) => image.id === payload.imageId)
       if (payload.type === 'image_browser_state_patch') {
@@ -373,9 +450,9 @@ function browserHarness(t, { widgets = false, nativeSwitch = false, widgetDenied
   })
   harness.emit = emit
   harness.eventMessages = eventMessages
-  harness.pickerOpen = async (requestId = 'pick-1') => {
+  harness.pickerOpen = async (requestId = 'pick-1', selectedImageId) => {
     await flush()
-    emit('image_browser:picker:request', { version: 1, requester: 'quick_gen', requestId })
+    emit('image_browser:picker:request', { version: 1, requester: 'quick_gen', requestId, ...(selectedImageId ? { selectedImageId } : {}) })
     await flush()
   }
   harness.receive = (payload) => receive(payload)

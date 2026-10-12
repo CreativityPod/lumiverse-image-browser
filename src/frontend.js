@@ -481,12 +481,15 @@ export function setup(ctx) {
     }
   }
 
-  async function loadPage(offset = 0) {
+  async function loadPage(offset = 0, selectedImageId = null) {
     const state = browserState
     if (!state) return
     const requestedOffset = Math.max(0, Math.trunc(Number(offset)) || 0)
     if (state.loading) { state.queuedOffset = requestedOffset; return }
     const { imageFilter, query, picker } = state
+    const restoringSelection = picker && !query && typeof selectedImageId === 'string' && selectedImageId.length > 0 && selectedImageId.length <= 256
+    let restoredImageId = null
+    let selectionUnavailable = false
     state.loading = true
     state.status = `Loading images ${requestedOffset + 1}–${requestedOffset + PAGE_SIZE}…`
     state.tone = ''
@@ -498,6 +501,7 @@ export function setup(ctx) {
         offset: resolvedOffset,
         imageFilter,
         ...(picker ? { picker: true, query } : {}),
+        ...(restoringSelection ? { selectedImageId } : {}),
       })
       if (browserState !== state) return
       let result = response.result || { data: [], total: 0 }
@@ -519,6 +523,16 @@ export function setup(ctx) {
       if (state.imageFilter !== imageFilter || (picker && state.query !== query)) return
       state.items = Array.isArray(result.data) ? result.data : []
       if (picker) state.items = state.items.filter((image) => String(image.mime_type || '').startsWith('image/'))
+      if (restoringSelection) {
+        state.imageFilter = result.imageFilter === 'non-generated' ? 'non-generated' : 'generated'
+        resolvedOffset = Number.isSafeInteger(result.offset) && result.offset >= 0 ? result.offset : 0
+        state.selectedImage = state.items.find((image) => image.id === selectedImageId) || null
+        state.selected.clear()
+        if (state.selectedImage) {
+          state.selected.add(selectedImageId)
+          restoredImageId = selectedImageId
+        } else selectionUnavailable = true
+      }
       state.total = Math.max(0, Number(result.total) || 0)
       state.offset = resolvedOffset
       state.permissionGranted = true
@@ -535,6 +549,10 @@ export function setup(ctx) {
               ? 'No non-generated images were found.'
               : 'No stored images were found.'
           : 'No images were found on this page.'
+      if (selectionUnavailable) {
+        state.status = `The previously selected image is unavailable. Showing Generated images. ${state.status}`
+        state.tone = 'warning'
+      }
     } catch (error) {
       if (browserState !== state) return
       state.status = error instanceof Error ? error.message : String(error)
@@ -547,7 +565,7 @@ export function setup(ctx) {
       if (browserState !== state) return
       state.loading = false
       renderLauncher()
-      renderBrowser()
+      renderBrowser({ scrollToImageId: restoredImageId })
       if (state.queuedOffset !== undefined) {
         const queued = state.queuedOffset
         delete state.queuedOffset
@@ -612,7 +630,7 @@ export function setup(ctx) {
       state.storageError = `Could not load saved preferences; changes will not be saved. Reopen Image Browser to retry. ${error instanceof Error ? error.message : String(error)}`
     }
     state.loading = false
-    void loadPage(state.offset)
+    void loadPage(state.offset, picker?.selectedImageId)
   }
 
   function openPreview(image, previewImages) {
@@ -860,7 +878,7 @@ export function setup(ctx) {
     return card
   }
 
-  function renderBrowser({ preserveGridScroll = false } = {}) {
+  function renderBrowser({ preserveGridScroll = false, scrollToImageId = null } = {}) {
     if (!browserState?.root) return
     const state = browserState
     const searchFocused = document.activeElement === state.root.querySelector('.lib-search')
@@ -939,10 +957,15 @@ export function setup(ctx) {
     status.dataset.tone = state.permissionGranted === false || state.storageError ? 'error' : state.tone
 
     const grid = createElement('div', 'lib-grid')
+    let scrollTarget = null
     if (visibleImages.length === 0) {
       grid.appendChild(createElement('div', 'lib-empty', state.loading ? 'Loading…' : 'No loaded images match this view.'))
     } else {
-      for (const image of visibleImages) grid.appendChild(renderCard(image, visibleImages))
+      for (const image of visibleImages) {
+        const card = renderCard(image, visibleImages)
+        grid.appendChild(card)
+        if (image.id === scrollToImageId) scrollTarget = card
+      }
     }
 
     const footer = createElement('div', 'lib-footer')
@@ -1034,6 +1057,7 @@ export function setup(ctx) {
 
     state.root.append(summary, toolbar, status, grid, footer)
     if (preserveGridScroll) grid.scrollTop = previousGridScrollTop
+    scrollTarget?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     if (searchFocused) search.focus()
   }
 

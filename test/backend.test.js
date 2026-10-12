@@ -204,6 +204,75 @@ test('picker searches the whole still-image library before pagination and keeps 
   assert.equal(h.listCalls.length, 2)
 })
 
+test('picker locates the selected generated image by ID and follows page shifts after uploads', async () => {
+  const images = [
+    { id: 'video', mime_type: 'video/mp4', original_filename: 'image-gen-video.png' },
+    { id: 'upload', mime_type: 'image/png', original_filename: 'portrait.png' },
+    ...Array.from({ length: 140 }, (_, i) => ({ id: `generated-${i}`, mime_type: 'image/png', original_filename: `image-gen-${i}.png` })),
+  ]
+  const h = await createHarness(true, ({ offset, limit }) => ({ data: images.slice(offset, offset + limit), total: images.length }))
+  const request = { type: 'image_browser_list', picker: true, selectedImageId: 'generated-119', imageFilter: 'non-generated', query: 'unrelated', offset: 999, limit: 60, userId: 'bob' }
+  await h.frontendHandler(request, 'alice')
+  let result = h.sent.at(-1).payload.result
+  assert.equal(result.imageFilter, 'generated')
+  assert.equal(result.offset, 60)
+  assert.equal(result.total, 140)
+  assert.equal(result.data.at(-1).id, 'generated-119')
+  assert.ok(h.listCalls.every((call) => call.userId === 'alice'))
+  images.unshift({ id: 'new', mime_type: 'image/png', original_filename: 'image-gen-new.png' })
+  h.eventHandlers.get('IMAGE_UPLOADED')({}, 'alice')
+  await h.frontendHandler(request, 'alice')
+  result = h.sent.at(-1).payload.result
+  assert.equal(result.offset, 120)
+  assert.equal(result.total, 141)
+  assert.equal(result.data[0].id, 'generated-119')
+  images.splice(images.findIndex((image) => image.id === 'generated-119'), 1)
+  h.eventHandlers.get('IMAGE_DELETED')({}, 'alice')
+  await h.frontendHandler(request, 'alice')
+  result = h.sent.at(-1).payload.result
+  assert.equal(result.offset, 0)
+  assert.equal(result.imageFilter, 'generated')
+  assert.equal(result.data[0].id, 'new')
+})
+
+test('picker restores uploaded images on their non-generated still-image page', async () => {
+  const images = [
+    { id: 'generated', mime_type: 'image/png', original_filename: 'image-gen-test.png' },
+    { id: 'video', mime_type: 'video/mp4', original_filename: 'video.mp4' },
+    ...Array.from({ length: 80 }, (_, i) => ({ id: `upload-${i}`, mime_type: 'image/png', original_filename: `photo-${i}.png` })),
+  ]
+  const h = await createHarness(true, ({ offset, limit }) => ({ data: images.slice(offset, offset + limit), total: images.length }))
+  await h.frontendHandler({ type: 'image_browser_list', picker: true, selectedImageId: 'upload-65', imageFilter: 'generated', limit: 60 }, 'alice')
+  const result = h.sent.at(-1).payload.result
+  assert.equal(result.imageFilter, 'non-generated')
+  assert.equal(result.offset, 60)
+  assert.equal(result.total, 80)
+  assert.equal(result.data[5].id, 'upload-65')
+})
+
+test('missing and video selections fall back to Generated page one; management ignores picker anchors', async () => {
+  const images = [
+    { id: 'video', mime_type: 'video/mp4', original_filename: 'image-gen-video.png' },
+    { id: 'generated', mime_type: 'image/png', original_filename: 'image-gen-test.png' },
+    { id: 'upload', mime_type: 'image/png', original_filename: 'photo.png' },
+  ]
+  const h = await createHarness(true, ({ offset, limit }) => ({ data: images.slice(offset, offset + limit), total: images.length }))
+  for (const selectedImageId of ['missing', 'video']) {
+    await h.frontendHandler({ type: 'image_browser_list', picker: true, selectedImageId, imageFilter: 'non-generated', offset: 60, query: 'no match' }, 'alice')
+    const result = h.sent.at(-1).payload.result
+    assert.equal(result.imageFilter, 'generated')
+    assert.equal(result.offset, 0)
+    assert.equal(result.total, 1)
+    assert.equal(result.data[0].id, 'generated')
+  }
+  await h.frontendHandler({ type: 'image_browser_list', selectedImageId: 'upload', imageFilter: 'generated', offset: 1, limit: 1 }, 'alice')
+  const result = h.sent.at(-1).payload.result
+  assert.equal(result.total, 2)
+  assert.equal(result.data[0].id, 'generated')
+  assert.equal(result.imageFilter, undefined)
+  assert.equal(result.offset, undefined)
+})
+
 test('paginates generated and non-generated images from one invalidated classification cache', async () => {
   const allImages = [
     { id: 'regular-1', original_filename: 'portrait.png' },
